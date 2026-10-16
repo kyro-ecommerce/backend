@@ -46,9 +46,18 @@ public class User {
   @Column(name = "created_at")
   private LocalDateTime createdAt;
 
+  @Column(name = "updated_at")
+  private LocalDateTime updatedAt;
+
   @PrePersist
   protected void onCreate() {
     this.createdAt = LocalDateTime.now();
+    this.updatedAt = LocalDateTime.now();
+  }
+
+  @PreUpdate
+  protected void onUpdate() {
+    this.updatedAt = LocalDateTime.now();
   }
 
   @ManyToOne
@@ -63,18 +72,6 @@ public class User {
   private String oauthProviderId;
   private String imageUrl;
 
-  @Column(name = "website")
-  private String website;
-
-  @Column(name = "business_type")
-  private String businessType;
-
-  @Column(name = "shop_description")
-  private String shopDescription;
-
-  @Column(name = "shop_name")
-  private String shopName;
-
   public User(String firstName, String lastName, String email, String password, Role role) {
     this.firstName = firstName;
     this.lastName = lastName;
@@ -83,6 +80,7 @@ public class User {
     this.role = role;
     this.active = false;
     this.createdAt = LocalDateTime.now();
+    this.updatedAt = LocalDateTime.now();
   }
 
   public User(
@@ -95,6 +93,7 @@ public class User {
     this.phone = phone;
     this.active = false;
     this.createdAt = LocalDateTime.now();
+    this.updatedAt = LocalDateTime.now();
   }
 
   public Long getId() {
@@ -209,35 +208,11 @@ public class User {
     this.imageUrl = imageUrl;
   }
 
-  public String getWebsite() {
-    return website;
+  public LocalDateTime getUpdatedAt() {
+    return updatedAt;
   }
 
-  public void setWebsite(String website) {
-    this.website = website;
-  }
-
-  public String getBusinessType() {
-    return businessType;
-  }
-
-  public void setBusinessType(String businessType) {
-    this.businessType = businessType;
-  }
-
-  public String getShopDescription() {
-    return shopDescription;
-  }
-
-  public void setShopDescription(String shopDescription) {
-    this.shopDescription = shopDescription;
-  }
-
-  public String getShopName() {
-    return shopName;
-  }
-
-  public void setShopName(String shopName) {
-    this.shopName = shopName;
+  public void setUpdatedAt(LocalDateTime updatedAt) {
+    this.updatedAt = updatedAt;
   }
 }

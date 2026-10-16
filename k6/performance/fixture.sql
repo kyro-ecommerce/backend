@@ -39,10 +39,10 @@ COMMIT;
 \connect kyro_order
 BEGIN;
 CREATE TEMP TABLE perf_orders AS
-SELECT id, order_address FROM orders WHERE user_id BETWEEN 100000 AND 139999 OR id >= 999999;
+SELECT id, order_address_id FROM orders WHERE user_id BETWEEN 100000 AND 139999 OR id >= 999999;
 DELETE FROM order_item WHERE order_id IN (SELECT id FROM perf_orders);
 DELETE FROM orders WHERE id IN (SELECT id FROM perf_orders);
-DELETE FROM order_address WHERE id IN (SELECT order_address FROM perf_orders WHERE order_address IS NOT NULL);
+DELETE FROM order_address WHERE id IN (SELECT order_address_id FROM perf_orders WHERE order_address_id IS NOT NULL);
 INSERT INTO orders
   (id, order_code, order_date, order_status, original_price, discount, payment_method, payment_status, total_discounted_price, total_items, user_id, user_email)
 SELECT 9000000 + i, 'PERF' || lpad(i::text, 12, '0'), now(), 'PENDING', 100, 0, 'VNPAY', 'PENDING', 100, 1,

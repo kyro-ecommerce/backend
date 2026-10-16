@@ -5,7 +5,7 @@ import jakarta.persistence.*;
 /** Persisted snapshot of the shipping address for an order. Decoupled from the User database. */
 @Entity
 @Table(name = "order_address")
-public class Address {
+public class OrderAddress {
   @Id
   @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
@@ -18,9 +18,9 @@ public class Address {
   private String note;
   private String phoneNumber;
 
-  public Address() {}
+  public OrderAddress() {}
 
-  public Address(
+  public OrderAddress(
       Long id,
       String fullName,
       String province,

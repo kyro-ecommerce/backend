@@ -268,7 +268,7 @@ public class OrderService {
           "Địa chỉ giao hàng không hợp lệ.");
     }
 
-    Address shippingAddress = new Address();
+    OrderAddress shippingAddress = new OrderAddress();
     shippingAddress.setFullName(addrResp.fullName());
     shippingAddress.setProvince(addrResp.province());
     shippingAddress.setDistrict(addrResp.district());
@@ -663,7 +663,7 @@ public class OrderService {
   }
 
   private void publishOrderConfirmation(Order order) {
-    Address address = order.getShippingAddress();
+    OrderAddress address = order.getShippingAddress();
     Map<String, Object> addressMap = new HashMap<>();
     addressMap.put("fullName", address.getFullName());
     addressMap.put("phoneNumber", address.getPhoneNumber());

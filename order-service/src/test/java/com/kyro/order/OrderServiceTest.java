@@ -206,7 +206,7 @@ class OrderServiceTest {
     order.setOrderDate(LocalDateTime.parse("2026-08-16T15:35:00"));
     order.setTotalDiscountedPrice(496_290L);
     order.setShippingAddress(
-        new Address(1L, "Customer", "Province", "District", "Ward", "Street", null, "0123"));
+        new OrderAddress(1L, "Customer", "Province", "District", "Ward", "Street", null, "0123"));
     OrderItem item = order.getOrderItems().iterator().next();
     item.setSku("POWERBANK-20K");
     item.setProductName("Power Bank");

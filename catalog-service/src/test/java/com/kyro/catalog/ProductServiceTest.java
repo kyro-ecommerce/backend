@@ -39,4 +39,77 @@ class ProductServiceTest {
             List.of(new OrderClient.TopSellingProductResponse(1L, 7L)), List.of(p));
     assertEquals(7L, result.getFirst().get("quantitySold"));
   }
+
+  @Test
+  void reserveStockDeductsStockAndSavesIdempotencyRecord() {
+    ProductVariantRepository variantRepo = org.mockito.Mockito.mock(ProductVariantRepository.class);
+    ProcessedStockReservationRepository reservationRepo =
+        org.mockito.Mockito.mock(ProcessedStockReservationRepository.class);
+    ProductService service =
+        new ProductService(null, null, null, null, null, null, variantRepo, reservationRepo);
+
+    ProductVariant variant = new ProductVariant();
+    variant.setId(100L);
+    variant.setActive(true);
+    variant.setStock(10);
+
+    org.mockito.Mockito.when(reservationRepo.existsById(1L)).thenReturn(false);
+    org.mockito.Mockito.when(variantRepo.findByIdWithLock(100L))
+        .thenReturn(java.util.Optional.of(variant));
+
+    boolean result =
+        service.reserveStock(1L, List.of(java.util.Map.of("variantId", 100L, "quantity", 3)));
+
+    assertTrue(result);
+    assertEquals(7, variant.getStock());
+    org.mockito.Mockito.verify(reservationRepo)
+        .save(org.mockito.ArgumentMatchers.any(ProcessedStockReservation.class));
+  }
+
+  @Test
+  void reserveStockIsIdempotentOnDuplicateCall() {
+    ProductVariantRepository variantRepo = org.mockito.Mockito.mock(ProductVariantRepository.class);
+    ProcessedStockReservationRepository reservationRepo =
+        org.mockito.Mockito.mock(ProcessedStockReservationRepository.class);
+    ProductService service =
+        new ProductService(null, null, null, null, null, null, variantRepo, reservationRepo);
+
+    org.mockito.Mockito.when(reservationRepo.existsById(1L)).thenReturn(true);
+
+    boolean result =
+        service.reserveStock(1L, List.of(java.util.Map.of("variantId", 100L, "quantity", 3)));
+
+    assertTrue(result);
+    org.mockito.Mockito.verify(variantRepo, org.mockito.Mockito.never())
+        .findByIdWithLock(org.mockito.ArgumentMatchers.anyLong());
+    org.mockito.Mockito.verify(reservationRepo, org.mockito.Mockito.never())
+        .save(org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  void reserveStockFailsWhenStockInsufficient() {
+    ProductVariantRepository variantRepo = org.mockito.Mockito.mock(ProductVariantRepository.class);
+    ProcessedStockReservationRepository reservationRepo =
+        org.mockito.Mockito.mock(ProcessedStockReservationRepository.class);
+    ProductService service =
+        new ProductService(null, null, null, null, null, null, variantRepo, reservationRepo);
+
+    ProductVariant variant = new ProductVariant();
+    variant.setId(100L);
+    variant.setActive(true);
+    variant.setStock(2);
+
+    org.mockito.Mockito.when(reservationRepo.existsById(1L)).thenReturn(false);
+    org.mockito.Mockito.when(variantRepo.findByIdWithLock(100L))
+        .thenReturn(java.util.Optional.of(variant));
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            service.reserveStock(1L, List.of(java.util.Map.of("variantId", 100L, "quantity", 5))));
+
+    assertEquals(2, variant.getStock());
+    org.mockito.Mockito.verify(reservationRepo, org.mockito.Mockito.never())
+        .save(org.mockito.ArgumentMatchers.any());
+  }
 }

@@ -46,8 +46,8 @@ public class Order {
   private Collection<OrderItem> orderItems = new HashSet<>();
 
   @ManyToOne(cascade = CascadeType.PERSIST)
-  @JoinColumn(name = "orderAddress")
-  private Address shippingAddress;
+  @JoinColumn(name = "order_address_id")
+  private OrderAddress shippingAddress;
 
   @Column(name = "delivery_date")
   private LocalDateTime deliveryDate;
@@ -76,10 +76,32 @@ public class Order {
   @Column(name = "expires_at")
   private Instant expiresAt;
 
+  @Column(name = "created_at")
+  private LocalDateTime createdAt;
+
+  @Column(name = "updated_at")
+  private LocalDateTime updatedAt;
+
   @PrePersist
+  void prePersist() {
+    assignOrderCode();
+    if (orderDate == null) {
+      orderDate = LocalDateTime.now();
+    }
+    createdAt = LocalDateTime.now();
+    updatedAt = LocalDateTime.now();
+  }
+
   void assignOrderCode() {
-    orderCode =
-        "KYR-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
+    if (orderCode == null) {
+      orderCode =
+          "KYR-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
+    }
+  }
+
+  @PreUpdate
+  void preUpdate() {
+    updatedAt = LocalDateTime.now();
   }
 
   public Long getId() {
@@ -142,11 +164,11 @@ public class Order {
     this.orderItems = orderItems;
   }
 
-  public Address getShippingAddress() {
+  public OrderAddress getShippingAddress() {
     return shippingAddress;
   }
 
-  public void setShippingAddress(Address shippingAddress) {
+  public void setShippingAddress(OrderAddress shippingAddress) {
     this.shippingAddress = shippingAddress;
   }
 
@@ -212,5 +234,21 @@ public class Order {
 
   public void setExpiresAt(Instant expiresAt) {
     this.expiresAt = expiresAt;
+  }
+
+  public LocalDateTime getCreatedAt() {
+    return createdAt;
+  }
+
+  public void setCreatedAt(LocalDateTime createdAt) {
+    this.createdAt = createdAt;
+  }
+
+  public LocalDateTime getUpdatedAt() {
+    return updatedAt;
+  }
+
+  public void setUpdatedAt(LocalDateTime updatedAt) {
+    this.updatedAt = updatedAt;
   }
 }

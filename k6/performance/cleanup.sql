@@ -11,10 +11,10 @@ DELETE FROM carts WHERE user_id BETWEEN 100000 AND 139999;
 \connect kyro_order
 BEGIN;
 CREATE TEMP TABLE perf_orders AS
-SELECT id, order_address FROM orders WHERE user_id BETWEEN 100000 AND 139999 OR id >= 999999;
+SELECT id, order_address_id FROM orders WHERE user_id BETWEEN 100000 AND 139999 OR id >= 999999;
 DELETE FROM order_item WHERE order_id IN (SELECT id FROM perf_orders);
 DELETE FROM orders WHERE id IN (SELECT id FROM perf_orders);
-DELETE FROM order_address WHERE id IN (SELECT order_address FROM perf_orders WHERE order_address IS NOT NULL);
+DELETE FROM order_address WHERE id IN (SELECT order_address_id FROM perf_orders WHERE order_address_id IS NOT NULL);
 SELECT setval(pg_get_serial_sequence('orders', 'id'), greatest(coalesce((SELECT max(id) FROM orders), 1), 1));
 COMMIT;
 

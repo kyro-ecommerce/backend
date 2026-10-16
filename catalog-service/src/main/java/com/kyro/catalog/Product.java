@@ -57,6 +57,9 @@ public class Product {
   @Column(name = "created_at", nullable = false)
   private LocalDateTime createdAt;
 
+  @Column(name = "updated_at")
+  private LocalDateTime updatedAt;
+
   @Formula(
       "(select coalesce(min(v.price),0) from product_variant v where v.product_id=id and"
           + " v.active=true)")
@@ -79,6 +82,12 @@ public class Product {
   @PrePersist
   void onCreate() {
     if (createdAt == null) createdAt = LocalDateTime.now();
+    this.updatedAt = LocalDateTime.now();
+  }
+
+  @PreUpdate
+  void onUpdate() {
+    this.updatedAt = LocalDateTime.now();
   }
 
   public Long getId() {
@@ -181,6 +190,14 @@ public class Product {
 
   public void setCreatedAt(LocalDateTime value) {
     createdAt = value;
+  }
+
+  public LocalDateTime getUpdatedAt() {
+    return updatedAt;
+  }
+
+  public void setUpdatedAt(LocalDateTime value) {
+    updatedAt = value;
   }
 
   public long getMinPrice() {

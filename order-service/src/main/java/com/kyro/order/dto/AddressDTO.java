@@ -1,6 +1,6 @@
 package com.kyro.order.dto;
 
-import com.kyro.order.Address;
+import com.kyro.order.OrderAddress;
 
 /** Address DTO for representing shipping address details in orders. */
 public class AddressDTO {
@@ -15,7 +15,7 @@ public class AddressDTO {
 
   public AddressDTO() {}
 
-  public AddressDTO(Address address) {
+  public AddressDTO(OrderAddress address) {
     if (address != null) {
       this.id = address.getId();
       this.fullName = address.getFullName();

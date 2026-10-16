@@ -6,6 +6,8 @@ import com.kyro.catalog.messaging.ProductEventPublisher;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.persistence.criteria.*;
 import java.util.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.*;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -13,11 +15,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ProductService {
+  private static final Logger log = LoggerFactory.getLogger(ProductService.class);
+
   private final ProductRepository products;
   private final ProductVariantRepository variants;
   private final CategoryRepository categories;
   private final ProductEventPublisher events;
   private final OrderClient orders;
+  private final ProcessedStockReservationRepository stockReservations;
 
   public ProductService(
       ProductRepository products,
@@ -26,12 +31,14 @@ public class ProductService {
       ImageService ignoredImages,
       ProductEventPublisher events,
       OrderClient orders,
-      ProductVariantRepository variants) {
+      ProductVariantRepository variants,
+      ProcessedStockReservationRepository stockReservations) {
     this.products = products;
     this.categories = categories;
     this.events = events;
     this.orders = orders;
     this.variants = variants;
+    this.stockReservations = stockReservations;
   }
 
   @Transactional(readOnly = true)
@@ -281,12 +288,25 @@ public class ProductService {
   }
 
   @Transactional
-  public void reserveStock(List<Map<String, Object>> items) {
+  public boolean reserveStock(Long orderId, List<Map<String, Object>> items) {
+    if (orderId != null && stockReservations.existsById(orderId)) {
+      log.info("Stock for Order ID #{} already reserved, skipping duplicate deduction", orderId);
+      return true;
+    }
     for (Map<String, Object> item : items) {
       Long variantId = Long.valueOf(item.get("variantId").toString());
       int quantity = Integer.parseInt(item.get("quantity").toString());
       adjustStock(variantId, -quantity);
     }
+    if (orderId != null) {
+      stockReservations.save(new ProcessedStockReservation(orderId));
+    }
+    return true;
+  }
+
+  @Transactional
+  public void reserveStock(List<Map<String, Object>> items) {
+    reserveStock(null, items);
   }
 
   private void apply(
