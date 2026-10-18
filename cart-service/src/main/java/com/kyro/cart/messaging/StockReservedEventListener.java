@@ -10,17 +10,17 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 
 @Component
-public class OrderEventListener {
+public class StockReservedEventListener {
 
-  private static final Logger log = LoggerFactory.getLogger(OrderEventListener.class);
+  private static final Logger log = LoggerFactory.getLogger(StockReservedEventListener.class);
 
   private final CartService cartService;
 
-  public OrderEventListener(CartService cartService) {
+  public StockReservedEventListener(CartService cartService) {
     this.cartService = cartService;
   }
 
-  @RabbitListener(queues = RabbitMQConfig.CART_CLEAR_QUEUE)
+  @RabbitListener(queues = RabbitMQConfig.CART_STOCK_RESERVED_QUEUE)
   public void handleStockReserved(Map<String, Object> event) {
     Long userId = event.get("userId") != null ? Long.valueOf(event.get("userId").toString()) : null;
     Long orderId =

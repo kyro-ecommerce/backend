@@ -2,23 +2,25 @@ package com.kyro.catalog.messaging;
 
 import com.kyro.catalog.ProductService;
 import com.kyro.catalog.config.RabbitMQConfig;
+import jakarta.persistence.EntityNotFoundException;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.AmqpRejectAndDontRequeueException;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
 @Component
-public class OrderEventListener {
+public class OrderCreatedEventListener {
 
-  private static final Logger log = LoggerFactory.getLogger(OrderEventListener.class);
+  private static final Logger log = LoggerFactory.getLogger(OrderCreatedEventListener.class);
 
   private final ProductService productService;
   private final RabbitTemplate rabbitTemplate;
 
-  public OrderEventListener(ProductService productService, RabbitTemplate rabbitTemplate) {
+  public OrderCreatedEventListener(ProductService productService, RabbitTemplate rabbitTemplate) {
     this.productService = productService;
     this.rabbitTemplate = rabbitTemplate;
   }
@@ -31,14 +33,20 @@ public class OrderEventListener {
     log.debug("Received OrderCreatedEvent for Order ID #{}, User ID #{}", orderId, userId);
 
     if (orderId == null) {
-      return;
+      log.error("Poison pill detected: OrderCreatedEvent missing orderId: {}", event);
+      throw new AmqpRejectAndDontRequeueException(
+          "Invalid OrderCreatedEvent payload: orderId is null");
+    }
+
+    List<Map<String, Object>> items = (List<Map<String, Object>>) event.get("items");
+    if (items == null || items.isEmpty()) {
+      log.error("Poison pill detected: OrderCreatedEvent missing items for Order ID #{}", orderId);
+      throw new AmqpRejectAndDontRequeueException(
+          "Invalid OrderCreatedEvent payload: items is null or empty for order " + orderId);
     }
 
     try {
-      List<Map<String, Object>> items = (List<Map<String, Object>>) event.get("items");
-      if (items != null) {
-        productService.reserveStock(orderId, items);
-      }
+      productService.reserveStock(orderId, items);
 
       // Publish stock.reserved success event
       Map<String, Object> successEvent =
@@ -56,10 +64,12 @@ public class OrderEventListener {
       rabbitTemplate.convertAndSend(RabbitMQConfig.ORDER_EXCHANGE, "stock.reserved", successEvent);
       log.debug("Published stock.reserved event for Order ID #{}", orderId);
 
-    } catch (Exception e) {
-      log.error("Failed to decrease stock for Order ID #{}: {}", orderId, e.getMessage(), e);
+    } catch (IllegalStateException | EntityNotFoundException | IllegalArgumentException e) {
+      // Tier 1: Business failure (insufficient stock, inactive variant, variant not found)
+      // Do not retry, do not send to DLQ; trigger Saga compensation
+      log.warn(
+          "Business failure while reserving stock for Order ID #{}: {}", orderId, e.getMessage());
 
-      // Publish stock.failed compensation event
       Map<String, Object> failedEvent =
           Map.of(
               "orderId",
@@ -72,6 +82,18 @@ public class OrderEventListener {
               e.getMessage() != null ? e.getMessage() : "Insufficient stock");
       rabbitTemplate.convertAndSend(RabbitMQConfig.ORDER_EXCHANGE, "stock.failed", failedEvent);
       log.debug("Published stock.failed event for Order ID #{}", orderId);
+
+    } catch (AmqpRejectAndDontRequeueException e) {
+      throw e;
+    } catch (Exception e) {
+      // Tier 2: System / Transient failure (DB connection drop, transient lock error, etc.)
+      // Rethrow to allow Spring AMQP retry policy (3 attempts) then DLQ routing
+      log.error(
+          "Transient system failure while reserving stock for Order ID #{}: {}",
+          orderId,
+          e.getMessage(),
+          e);
+      throw e;
     }
   }
 }

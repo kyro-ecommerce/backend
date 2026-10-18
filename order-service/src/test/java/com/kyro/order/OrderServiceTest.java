@@ -333,6 +333,74 @@ class OrderServiceTest {
             });
   }
 
+  @Test
+  void placeOrderIdempotentReturnsExistingOrderOnPreCheckHit() {
+    Order existingOrder = new Order();
+    existingOrder.setId(99L);
+    existingOrder.setUserId(10L);
+    existingOrder.setIdempotencyKey("key-123");
+
+    OrderRepository repo =
+        proxy(
+            OrderRepository.class,
+            (proxy, method, args) -> {
+              if ("findByUserIdAndIdempotencyKey".equals(method.getName())) {
+                return Optional.of(existingOrder);
+              }
+              throw new UnsupportedOperationException(method.getName());
+            });
+
+    OrderService orderService = new OrderService(repo, null, null, null, null, null);
+    List<Order> result =
+        orderService.placeOrderIdempotent(
+            1L, 10L, "user@test.com", PaymentMethod.COD, List.of(1L), 0L, 100L, "key-123");
+
+    assertEquals(1, result.size());
+    assertEquals(99L, result.getFirst().getId());
+  }
+
+  @Test
+  void placeOrderIdempotentHandlesRaceConditionGracefully() {
+    Order winnerOrder = new Order();
+    winnerOrder.setId(101L);
+    winnerOrder.setUserId(10L);
+    winnerOrder.setIdempotencyKey("key-race");
+
+    var callCount = new int[] {0};
+    OrderRepository repo =
+        proxy(
+            OrderRepository.class,
+            (proxy, method, args) -> {
+              if ("findByUserIdAndIdempotencyKey".equals(method.getName())) {
+                callCount[0]++;
+                // 1st call (pre-check): return empty
+                // 2nd call (after race exception): return winnerOrder
+                return callCount[0] == 1 ? Optional.empty() : Optional.of(winnerOrder);
+              }
+              throw new UnsupportedOperationException(method.getName());
+            });
+
+    org.springframework.transaction.support.TransactionTemplate txTemplate =
+        new org.springframework.transaction.support.TransactionTemplate() {
+          @Override
+          @SuppressWarnings("unchecked")
+          public <T> T execute(
+              org.springframework.transaction.support.TransactionCallback<T> action) {
+            throw new org.springframework.dao.DataIntegrityViolationException(
+                "duplicate key value violates unique constraint uq_orders_user_idempotency_key");
+          }
+        };
+
+    OrderService orderService = new OrderService(repo, null, null, null, null, null, txTemplate);
+    List<Order> result =
+        orderService.placeOrderIdempotent(
+            1L, 10L, "user@test.com", PaymentMethod.COD, List.of(1L), 0L, 100L, "key-race");
+
+    assertEquals(1, result.size());
+    assertEquals(101L, result.getFirst().getId());
+    assertEquals(2, callCount[0]);
+  }
+
   @SuppressWarnings("unchecked")
   private static <T> T proxy(Class<T> type, java.lang.reflect.InvocationHandler handler) {
     return (T) Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] {type}, handler);

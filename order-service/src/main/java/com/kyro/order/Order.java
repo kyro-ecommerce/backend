@@ -82,6 +82,9 @@ public class Order {
   @Column(name = "updated_at")
   private LocalDateTime updatedAt;
 
+  @Column(name = "idempotency_key", length = 128)
+  private String idempotencyKey;
+
   @PrePersist
   void prePersist() {
     assignOrderCode();
@@ -250,5 +253,13 @@ public class Order {
 
   public void setUpdatedAt(LocalDateTime updatedAt) {
     this.updatedAt = updatedAt;
+  }
+
+  public String getIdempotencyKey() {
+    return idempotencyKey;
+  }
+
+  public void setIdempotencyKey(String idempotencyKey) {
+    this.idempotencyKey = idempotencyKey;
   }
 }

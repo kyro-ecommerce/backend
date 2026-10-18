@@ -20,6 +20,8 @@ public interface OrderRepository
 
   List<Order> findByUserId(Long userId);
 
+  Optional<Order> findByUserIdAndIdempotencyKey(Long userId, String idempotencyKey);
+
   @Lock(LockModeType.PESSIMISTIC_WRITE)
   @Query("SELECT o FROM Order o WHERE o.id = :id")
   Optional<Order> findByIdForUpdate(@Param("id") Long id);

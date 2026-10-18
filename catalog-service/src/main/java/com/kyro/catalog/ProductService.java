@@ -289,17 +289,16 @@ public class ProductService {
 
   @Transactional
   public boolean reserveStock(Long orderId, List<Map<String, Object>> items) {
-    if (orderId != null && stockReservations.existsById(orderId)) {
+    if (orderId != null && stockReservations.markReservedIfAbsent(orderId) == 0) {
       log.info("Stock for Order ID #{} already reserved, skipping duplicate deduction", orderId);
       return true;
     }
-    for (Map<String, Object> item : items) {
+    List<Map<String, Object>> sortedItems = new ArrayList<>(items);
+    sortedItems.sort(Comparator.comparing(item -> Long.valueOf(item.get("variantId").toString())));
+    for (Map<String, Object> item : sortedItems) {
       Long variantId = Long.valueOf(item.get("variantId").toString());
       int quantity = Integer.parseInt(item.get("quantity").toString());
       adjustStock(variantId, -quantity);
-    }
-    if (orderId != null) {
-      stockReservations.save(new ProcessedStockReservation(orderId));
     }
     return true;
   }

@@ -11,17 +11,17 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 
 @Component
-public class OrderSagaEventListener {
+public class StockResultEventListener {
 
-  private static final Logger log = LoggerFactory.getLogger(OrderSagaEventListener.class);
+  private static final Logger log = LoggerFactory.getLogger(StockResultEventListener.class);
 
   private final OrderService orderService;
 
-  public OrderSagaEventListener(OrderService orderService) {
+  public StockResultEventListener(OrderService orderService) {
     this.orderService = orderService;
   }
 
-  @RabbitListener(queues = RabbitMQConfig.ORDER_SAGA_QUEUE)
+  @RabbitListener(queues = RabbitMQConfig.ORDER_STOCK_RESULT_QUEUE)
   public void handleStockResult(StockResultEvent event) {
     log.debug(
         "Received StockResultEvent for Order ID {}: success={}", event.orderId(), event.success());

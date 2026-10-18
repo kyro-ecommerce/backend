@@ -53,7 +53,7 @@ class ProductServiceTest {
     variant.setActive(true);
     variant.setStock(10);
 
-    org.mockito.Mockito.when(reservationRepo.existsById(1L)).thenReturn(false);
+    org.mockito.Mockito.when(reservationRepo.markReservedIfAbsent(1L)).thenReturn(1);
     org.mockito.Mockito.when(variantRepo.findByIdWithLock(100L))
         .thenReturn(java.util.Optional.of(variant));
 
@@ -62,8 +62,7 @@ class ProductServiceTest {
 
     assertTrue(result);
     assertEquals(7, variant.getStock());
-    org.mockito.Mockito.verify(reservationRepo)
-        .save(org.mockito.ArgumentMatchers.any(ProcessedStockReservation.class));
+    org.mockito.Mockito.verify(reservationRepo).markReservedIfAbsent(1L);
   }
 
   @Test
@@ -74,7 +73,7 @@ class ProductServiceTest {
     ProductService service =
         new ProductService(null, null, null, null, null, null, variantRepo, reservationRepo);
 
-    org.mockito.Mockito.when(reservationRepo.existsById(1L)).thenReturn(true);
+    org.mockito.Mockito.when(reservationRepo.markReservedIfAbsent(1L)).thenReturn(0);
 
     boolean result =
         service.reserveStock(1L, List.of(java.util.Map.of("variantId", 100L, "quantity", 3)));
@@ -82,8 +81,6 @@ class ProductServiceTest {
     assertTrue(result);
     org.mockito.Mockito.verify(variantRepo, org.mockito.Mockito.never())
         .findByIdWithLock(org.mockito.ArgumentMatchers.anyLong());
-    org.mockito.Mockito.verify(reservationRepo, org.mockito.Mockito.never())
-        .save(org.mockito.ArgumentMatchers.any());
   }
 
   @Test
@@ -99,7 +96,7 @@ class ProductServiceTest {
     variant.setActive(true);
     variant.setStock(2);
 
-    org.mockito.Mockito.when(reservationRepo.existsById(1L)).thenReturn(false);
+    org.mockito.Mockito.when(reservationRepo.markReservedIfAbsent(1L)).thenReturn(1);
     org.mockito.Mockito.when(variantRepo.findByIdWithLock(100L))
         .thenReturn(java.util.Optional.of(variant));
 
@@ -109,7 +106,5 @@ class ProductServiceTest {
             service.reserveStock(1L, List.of(java.util.Map.of("variantId", 100L, "quantity", 5))));
 
     assertEquals(2, variant.getStock());
-    org.mockito.Mockito.verify(reservationRepo, org.mockito.Mockito.never())
-        .save(org.mockito.ArgumentMatchers.any());
   }
 }

@@ -24,6 +24,7 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -31,6 +32,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Service class managing ordering workflow, integrated with external catalog, cart, auth
@@ -48,6 +50,25 @@ public class OrderService {
   private final CartClient cartClient;
   private final UserClient userClient;
   private final ApplicationEventPublisher eventPublisher;
+  private final TransactionTemplate transactionTemplate;
+
+  @org.springframework.beans.factory.annotation.Autowired
+  public OrderService(
+      OrderRepository orderRepository,
+      OrderItemRepository orderItemRepository,
+      CatalogClient catalogClient,
+      CartClient cartClient,
+      UserClient userClient,
+      ApplicationEventPublisher eventPublisher,
+      TransactionTemplate transactionTemplate) {
+    this.orderRepository = orderRepository;
+    this.orderItemRepository = orderItemRepository;
+    this.catalogClient = catalogClient;
+    this.cartClient = cartClient;
+    this.userClient = userClient;
+    this.eventPublisher = eventPublisher;
+    this.transactionTemplate = transactionTemplate;
+  }
 
   public OrderService(
       OrderRepository orderRepository,
@@ -56,12 +77,14 @@ public class OrderService {
       CartClient cartClient,
       UserClient userClient,
       ApplicationEventPublisher eventPublisher) {
-    this.orderRepository = orderRepository;
-    this.orderItemRepository = orderItemRepository;
-    this.catalogClient = catalogClient;
-    this.cartClient = cartClient;
-    this.userClient = userClient;
-    this.eventPublisher = eventPublisher;
+    this(
+        orderRepository,
+        orderItemRepository,
+        catalogClient,
+        cartClient,
+        userClient,
+        eventPublisher,
+        null);
   }
 
   public OrderDTO convertToDto(Order order) {
@@ -207,6 +230,65 @@ public class OrderService {
         userId, OrderStatus.DELIVERED, productId);
   }
 
+  public List<Order> placeOrderIdempotent(
+      Long addressId,
+      Long userId,
+      String userEmail,
+      PaymentMethod paymentMethod,
+      List<Long> cartItemIds,
+      long cartVersion,
+      long expectedTotalDiscountedPrice,
+      String idempotencyKey) {
+    String normalizedKey = clean(idempotencyKey);
+    if (normalizedKey != null) {
+      Optional<Order> existing =
+          orderRepository.findByUserIdAndIdempotencyKey(userId, normalizedKey);
+      if (existing.isPresent()) {
+        log.info("Idempotent replay hit (pre-check) for user {} key {}", userId, normalizedKey);
+        return List.of(existing.get());
+      }
+    }
+
+    if (transactionTemplate != null) {
+      try {
+        return transactionTemplate.execute(
+            status ->
+                placeOrderInternal(
+                    addressId,
+                    userId,
+                    userEmail,
+                    paymentMethod,
+                    cartItemIds,
+                    cartVersion,
+                    expectedTotalDiscountedPrice,
+                    normalizedKey));
+      } catch (DataIntegrityViolationException ex) {
+        if (normalizedKey != null) {
+          Optional<Order> concurrentWinner =
+              orderRepository.findByUserIdAndIdempotencyKey(userId, normalizedKey);
+          if (concurrentWinner.isPresent()) {
+            log.info(
+                "Idempotent replay hit (concurrent race) for user {} key {}",
+                userId,
+                normalizedKey);
+            return List.of(concurrentWinner.get());
+          }
+        }
+        throw ex;
+      }
+    } else {
+      return placeOrderInternal(
+          addressId,
+          userId,
+          userEmail,
+          paymentMethod,
+          cartItemIds,
+          cartVersion,
+          expectedTotalDiscountedPrice,
+          normalizedKey);
+    }
+  }
+
   @Transactional
   public List<Order> placeOrder(
       Long addressId,
@@ -216,6 +298,27 @@ public class OrderService {
       List<Long> cartItemIds,
       long cartVersion,
       long expectedTotalDiscountedPrice) {
+    return placeOrderInternal(
+        addressId,
+        userId,
+        userEmail,
+        paymentMethod,
+        cartItemIds,
+        cartVersion,
+        expectedTotalDiscountedPrice,
+        null);
+  }
+
+  @Transactional
+  public List<Order> placeOrderInternal(
+      Long addressId,
+      Long userId,
+      String userEmail,
+      PaymentMethod paymentMethod,
+      List<Long> cartItemIds,
+      long cartVersion,
+      long expectedTotalDiscountedPrice,
+      String idempotencyKey) {
     if (userId == null) {
       log.error("User ID is null when placing order.");
       throw new IllegalArgumentException("Thông tin người dùng không hợp lệ.");
@@ -300,6 +403,7 @@ public class OrderService {
     order.setOrderStatus(OrderStatus.PENDING);
     order.setPaymentStatus(PaymentStatus.PENDING);
     order.setStockReserved(false);
+    order.setIdempotencyKey(idempotencyKey);
     PaymentMethod selectedPaymentMethod = paymentMethod != null ? paymentMethod : PaymentMethod.COD;
     order.setPaymentMethod(selectedPaymentMethod);
     order.setExpiresAt(expirationFor(selectedPaymentMethod, Instant.now()));

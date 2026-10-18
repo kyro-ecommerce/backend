@@ -25,7 +25,6 @@ import org.springframework.web.bind.annotation.*;
  */
 @RestController
 @RequestMapping("${api.prefix}/orders")
-@Transactional
 public class OrderController {
   private static final Logger log = LoggerFactory.getLogger(OrderController.class);
 
@@ -37,6 +36,7 @@ public class OrderController {
 
   /** Gets order history for the logged-in user. */
   @GetMapping
+  @Transactional(readOnly = true)
   public ResponseEntity<PageResponse<OrderDTO>> getUserOrders(
       @RequestHeader("X-User-Id") Long userId,
       @RequestParam(required = false) String status,
@@ -74,17 +74,19 @@ public class OrderController {
   public ResponseEntity<Map<String, Object>> createOrder(
       @RequestHeader("X-User-Id") Long userId,
       @RequestHeader("X-User-Email") String userEmail,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
       @Valid @RequestBody CreateOrderRequest request) {
 
     List<Order> orders =
-        orderService.placeOrder(
+        orderService.placeOrderIdempotent(
             request.addressId(),
             userId,
             userEmail,
             request.paymentMethod(),
             request.cartItemIds(),
             request.cartVersion(),
-            request.expectedTotalDiscountedPrice());
+            request.expectedTotalDiscountedPrice(),
+            idempotencyKey);
 
     List<OrderDTO> orderDTOs = orders.stream().map(OrderDTO::new).collect(Collectors.toList());
 
@@ -106,6 +108,7 @@ public class OrderController {
 
   /** Finds an order by its ID. */
   @GetMapping("/{id}")
+  @Transactional(readOnly = true)
   public ResponseEntity<OrderDTO> findOrderById(
       @PathVariable("id") Long orderId, @RequestHeader("X-User-Id") Long userId) {
     Order order = orderService.findOrderById(orderId);

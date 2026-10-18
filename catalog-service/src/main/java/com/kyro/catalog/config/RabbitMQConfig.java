@@ -10,11 +10,16 @@ import org.springframework.context.annotation.Configuration;
 public class RabbitMQConfig {
 
   public static final String ORDER_EXCHANGE = "order-exchange";
+  public static final String DLX_EXCHANGE = "kyro.dlx";
+
   public static final String ORDER_CREATED_ROUTING_KEY = "order.created";
   public static final String ORDER_DELIVERED_ROUTING_KEY = "order.delivered";
 
   public static final String CATALOG_ORDER_QUEUE = "catalog-order-created-queue";
+  public static final String CATALOG_ORDER_DLQ = "catalog-order-created-queue.dlq";
+
   public static final String CATALOG_ORDER_DELIVERED_QUEUE = "catalog-order-delivered-queue";
+  public static final String CATALOG_ORDER_DELIVERED_DLQ = "catalog-order-delivered-queue.dlq";
 
   @Bean
   public TopicExchange orderExchange() {
@@ -22,8 +27,21 @@ public class RabbitMQConfig {
   }
 
   @Bean
+  public DirectExchange deadLetterExchange() {
+    return new DirectExchange(DLX_EXCHANGE);
+  }
+
+  @Bean
   public Queue catalogOrderQueue() {
-    return new Queue(CATALOG_ORDER_QUEUE, true);
+    return QueueBuilder.durable(CATALOG_ORDER_QUEUE)
+        .withArgument("x-dead-letter-exchange", DLX_EXCHANGE)
+        .withArgument("x-dead-letter-routing-key", CATALOG_ORDER_DLQ)
+        .build();
+  }
+
+  @Bean
+  public Queue catalogOrderDlq() {
+    return QueueBuilder.durable(CATALOG_ORDER_DLQ).build();
   }
 
   @Bean
@@ -34,8 +52,21 @@ public class RabbitMQConfig {
   }
 
   @Bean
+  public Binding catalogOrderDlqBinding() {
+    return BindingBuilder.bind(catalogOrderDlq()).to(deadLetterExchange()).with(CATALOG_ORDER_DLQ);
+  }
+
+  @Bean
   public Queue catalogOrderDeliveredQueue() {
-    return new Queue(CATALOG_ORDER_DELIVERED_QUEUE, true);
+    return QueueBuilder.durable(CATALOG_ORDER_DELIVERED_QUEUE)
+        .withArgument("x-dead-letter-exchange", DLX_EXCHANGE)
+        .withArgument("x-dead-letter-routing-key", CATALOG_ORDER_DELIVERED_DLQ)
+        .build();
+  }
+
+  @Bean
+  public Queue catalogOrderDeliveredDlq() {
+    return QueueBuilder.durable(CATALOG_ORDER_DELIVERED_DLQ).build();
   }
 
   @Bean
@@ -43,6 +74,13 @@ public class RabbitMQConfig {
     return BindingBuilder.bind(catalogOrderDeliveredQueue())
         .to(orderExchange())
         .with(ORDER_DELIVERED_ROUTING_KEY);
+  }
+
+  @Bean
+  public Binding catalogOrderDeliveredDlqBinding() {
+    return BindingBuilder.bind(catalogOrderDeliveredDlq())
+        .to(deadLetterExchange())
+        .with(CATALOG_ORDER_DELIVERED_DLQ);
   }
 
   @Bean
