@@ -4,19 +4,19 @@
 
 ## 1. Topology thực tế
 
-| Exchange | Routing key | Queue | Publisher | Consumer | Payload chính |
-| --- | --- | --- | --- | --- | --- |
-| `notification-exchange` | `notification.otp` | `otp-queue` | Auth | Notification | `email`, `otp`, `expirationMinutes` |
-| `notification-exchange` | `notification.order` | `order-queue` | Order | Notification | `email`, nested `order` snapshot |
-| `order-exchange` | `order.created` | `catalog-order-created-queue` | Order | Catalog | order/user + cart item/product/variant/quantity |
-| `order-exchange` | `stock.reserved` | `order-saga-queue` | Catalog | Order | order/user/items + `success=true` |
-| `order-exchange` | `stock.failed` | `order-saga-queue` | Catalog | Order | order/user + `success=false` |
-| `order-exchange` | `stock.reserved` | `cart-clear-queue` | Catalog | Cart | cùng event, dùng cartItemId + quantity |
-| `payment-exchange` | `payment.status.updated` | `order-payment-status-queue` | Payment | Order | `orderId`, status |
-| `order-exchange` | `order.delivered` | `catalog-order-delivered-queue` | Order | Catalog | orderId + productId/quantity gộp |
-| `product.events` | `product.created/updated/deleted` | Không khai báo trong repo | Catalog | AI ngoài repo | envelope event + product data |
+| Exchange | Routing key | Queue | DLQ (`kyro.dlx`) | Publisher | Consumer | Payload chính |
+| --- | --- | --- | --- | --- | --- | --- |
+| `notification-exchange` | `notification.otp` | `notification-otp-queue` | `notification-otp-queue.dlq` | Auth | Notification | `email`, `otp`, `expirationMinutes` |
+| `notification-exchange` | `notification.order` | `notification-order-confirmed-queue` | `notification-order-confirmed-queue.dlq` | Order | Notification | `email`, nested `order` snapshot |
+| `order-exchange` | `order.created` | `catalog-order-created-queue` | `catalog-order-created-queue.dlq` | Order | Catalog | order/user + cart item/product/variant/quantity |
+| `order-exchange` | `stock.reserved` | `order-stock-result-queue` | `order-stock-result-queue.dlq` | Catalog | Order | order/user/items + `success=true` |
+| `order-exchange` | `stock.failed` | `order-stock-result-queue` | `order-stock-result-queue.dlq` | Catalog | Order | order/user + `success=false` |
+| `order-exchange` | `stock.reserved` | `cart-stock-reserved-queue` | `cart-stock-reserved-queue.dlq` | Catalog | Cart | cùng event, dùng cartItemId + quantity |
+| `payment-exchange` | `payment.status.updated` | `order-payment-status-queue` | `order-payment-status-queue.dlq` | Payment | Order | `orderId`, status |
+| `order-exchange` | `order.delivered` | `catalog-order-delivered-queue` | `catalog-order-delivered-queue.dlq` | Order | Catalog | orderId + productId/quantity gộp |
+| `product.events` | `product.created/updated/deleted` | Không khai báo trong repo | — | Catalog | AI ngoài repo | envelope event + product data |
 
-Các queue Java khai báo đều durable. Exchange Java là topic exchange. `product.events` chỉ là tên khi publish; Catalog không khai báo bean exchange này, nên AI/infrastructure bên ngoài phải tạo exchange trước.
+Các queue Java khai báo đều durable và gắn Dead Letter Exchange `kyro.dlx` tới `<queue-name>.dlq`. Exchange chính là topic exchange. `product.events` chỉ là tên khi publish; Catalog không khai báo bean exchange này, nên AI/infrastructure bên ngoài phải tạo exchange trước.
 
 ## 2. Checkout và giữ tồn kho
 
@@ -30,7 +30,7 @@ sequenceDiagram
     participant R as RabbitMQ
     participant P as Catalog
 
-    Client->>O: POST /api/v1/orders + cart ids/version/expected total
+    Client->>O: POST /api/v1/orders + cart ids/version/expected total + Idempotency-Key
     O->>C: Feign getSelection
     C->>P: Feign batch product lookup
     P-->>C: variant active/stock/current prices
@@ -41,19 +41,19 @@ sequenceDiagram
     Note over O,R: AFTER_COMMIT
     O-->>R: order.created
     R-->>P: catalog-order-created-queue
-    P->>P: lock variants and decrement in one DB transaction
+    P->>P: atomic inbox check + lock sorted variants and decrement in one DB transaction
     alt reserve succeeds
         P-->>R: stock.reserved
         par order branch
-            R-->>O: order-saga-queue
+            R-->>O: order-stock-result-queue
             O->>O: stockReserved=true; confirm COD or paid VNPay
         and cart branch
-            R-->>C: cart-clear-queue
+            R-->>C: cart-stock-reserved-queue
             C->>C: remove purchased quantities once/orderId
         end
-    else reserve fails
+    else reserve fails (business error)
         P-->>R: stock.failed
-        R-->>O: order-saga-queue
+        R-->>O: order-stock-result-queue
         O->>O: cancel order
     end
 ```

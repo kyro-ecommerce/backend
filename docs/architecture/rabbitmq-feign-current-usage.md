@@ -15,19 +15,19 @@ RabbitMQ chạy tại `kyro-rabbitmq:5672`; giao diện quản trị được ex
 
 ### 1.1. Các exchange, routing key và queue thực tế
 
-| Publisher | Exchange (topic) | Routing key | Queue | Consumer | Trạng thái |
-| --- | --- | --- | --- | --- | --- |
-| `auth-service` | `notification-exchange` | `notification.otp` | `otp-queue` | `notification-service` | Đang dùng |
-| `order-service` | `order-exchange` | `order.created` | `catalog-order-created-queue` | `catalog-service` | Đang dùng |
-| `catalog-service` | `order-exchange` | `stock.reserved` | `order-saga-queue` | `order-service` | Đang dùng |
-| `catalog-service` | `order-exchange` | `stock.reserved` | `cart-clear-queue` | `cart-service` | Đang dùng |
-| `catalog-service` | `order-exchange` | `stock.failed` | `order-saga-queue` | `order-service` | Đang dùng |
-| `payment-service` | `payment-exchange` | `payment.status.updated` | `order-payment-status-queue` | `order-service` | Đang dùng |
-| `order-service` | `notification-exchange` | `notification.order` | `order-queue` | `notification-service` | Gửi khi order lần đầu thành `CONFIRMED` |
-| `order-service` | `order-exchange` | `order.delivered` | `catalog-order-delivered-queue` | `catalog-service` | Cộng `quantity_sold`, có idempotency theo orderId |
-| `catalog-service` | `product.events` | `product.created`, `product.updated`, `product.deleted` | `ai.product.events` theo comment | AI service ngoài repo này | Publisher đang được gọi; topology consumer không có trong repo |
+| Publisher | Exchange (topic) | Routing key | Queue | DLQ (`kyro.dlx`) | Consumer | Trạng thái |
+| --- | --- | --- | --- | --- | --- | --- |
+| `auth-service` | `notification-exchange` | `notification.otp` | `notification-otp-queue` | `notification-otp-queue.dlq` | `notification-service` | Đang dùng |
+| `order-service` | `order-exchange` | `order.created` | `catalog-order-created-queue` | `catalog-order-created-queue.dlq` | `catalog-service` | Đang dùng |
+| `catalog-service` | `order-exchange` | `stock.reserved` | `order-stock-result-queue` | `order-stock-result-queue.dlq` | `order-service` | Đang dùng |
+| `catalog-service` | `order-exchange` | `stock.reserved` | `cart-stock-reserved-queue` | `cart-stock-reserved-queue.dlq` | `cart-service` | Đang dùng |
+| `catalog-service` | `order-exchange` | `stock.failed` | `order-stock-result-queue` | `order-stock-result-queue.dlq` | `order-service` | Đang dùng |
+| `payment-service` | `payment-exchange` | `payment.status.updated` | `order-payment-status-queue` | `order-payment-status-queue.dlq` | `order-service` | Đang dùng |
+| `order-service` | `notification-exchange` | `notification.order` | `notification-order-confirmed-queue` | `notification-order-confirmed-queue.dlq` | `notification-service` | Gửi khi order lần đầu thành `CONFIRMED` |
+| `order-service` | `order-exchange` | `order.delivered` | `catalog-order-delivered-queue` | `catalog-order-delivered-queue.dlq` | `catalog-service` | Cộng `quantity_sold`, có idempotency theo orderId |
+| `catalog-service` | `product.events` | `product.created`, `product.updated`, `product.deleted` | `ai.product.events` theo comment | — | AI service ngoài repo này | Publisher đang được gọi; topology consumer không có trong repo |
 
-Các queue do Java service khai báo đều là durable. Message được serialize/deserialize bằng `Jackson2JsonMessageConverter`.
+Các queue do Java service khai báo đều là durable và gắn Dead Letter Exchange `kyro.dlx`. Message được serialize/deserialize bằng `Jackson2JsonMessageConverter`.
 
 ### 1.2. Luồng đặt hàng và giữ tồn kho
 
@@ -39,33 +39,33 @@ sequenceDiagram
     participant Catalog as catalog-service
     participant Rabbit as RabbitMQ
 
-    Client->>Order: Đặt hàng
+    Client->>Order: Đặt hàng (kèm Idempotency-Key)
     Order->>Cart: Feign POST /internal/carts/{userId}/selection
     Cart->>Catalog: Feign POST /internal/products/lookup
     Cart-->>Order: Các item đã chọn và tổng tiền hiện tại
     Order->>Order: Snapshot SKU, variant, giá và lưu order PENDING
     Order->>Rabbit: order-exchange / order.created
     Rabbit-->>Catalog: catalog-order-created-queue
-    Catalog->>Catalog: decreaseStock theo variantId cho từng item
+    Catalog->>Catalog: reserveStock nguyên tử (sorted variantId)
     alt Giữ tồn kho thành công
         Catalog->>Rabbit: order-exchange / stock.reserved
-        Rabbit-->>Order: order-saga-queue
+        Rabbit-->>Order: order-stock-result-queue
         Order->>Order: CONFIRMED nếu COD hoặc đã thanh toán
-        Rabbit-->>Cart: cart-clear-queue
+        Rabbit-->>Cart: cart-stock-reserved-queue
         Cart->>Cart: Xóa đúng số lượng item đã mua
-    else Có lỗi
+    else Lỗi nghiệp vụ (hết hàng)
         Catalog->>Rabbit: order-exchange / stock.failed
-        Rabbit-->>Order: order-saga-queue
+        Rabbit-->>Order: order-stock-result-queue
         Order->>Order: Chuyển order sang CANCELLED
     end
 ```
 
 Điểm gọi cụ thể:
 
-- [`OrderService.placeOrder`](../../order-service/src/main/java/com/kyro/order/OrderService.java) lưu order rồi publish `OrderCreatedEvent(orderId, userId, userEmail, items)` với routing key `order.created`.
-- [`catalog OrderEventListener`](../../catalog-service/src/main/java/com/kyro/catalog/messaging/OrderEventListener.java) đọc `catalog-order-created-queue`, trừ tồn kho và publish `stock.reserved` hoặc `stock.failed`.
-- [`order OrderSagaEventListener`](../../order-service/src/main/java/com/kyro/order/messaging/OrderSagaEventListener.java) đọc kết quả giữ tồn kho để xác nhận hoặc hủy order.
-- [`cart OrderEventListener`](../../cart-service/src/main/java/com/kyro/cart/messaging/OrderEventListener.java) cũng nhận `stock.reserved` nhưng qua queue riêng, sau đó xóa các item đã mua khỏi cart. Đây là cơ chế đang thay cho `CartClient.clearCart()`.
+- [`OrderService.placeOrderIdempotent`](../../order-service/src/main/java/com/kyro/order/OrderService.java) lưu order rồi publish `OrderCreatedEvent(orderId, userId, userEmail, items)` với routing key `order.created`.
+- [`catalog OrderCreatedEventListener`](../../catalog-service/src/main/java/com/kyro/catalog/messaging/OrderCreatedEventListener.java) đọc `catalog-order-created-queue`, phân tách 3 tầng lỗi, trừ tồn kho và publish `stock.reserved` hoặc `stock.failed`.
+- [`order StockResultEventListener`](../../order-service/src/main/java/com/kyro/order/messaging/StockResultEventListener.java) đọc kết quả giữ tồn kho để xác nhận hoặc hủy order.
+- [`cart StockReservedEventListener`](../../cart-service/src/main/java/com/kyro/cart/messaging/StockReservedEventListener.java) cũng nhận `stock.reserved` nhưng qua queue riêng (`cart-stock-reserved-queue`), sau đó xóa các item đã mua khỏi cart. Đây là cơ chế đang thay cho `CartClient.clearCart()`.
 
 ### 1.3. Luồng thanh toán VNPay
 
@@ -93,9 +93,9 @@ sequenceDiagram
 
 1. Đăng ký hoặc resend OTP gọi [`OtpService.sendOtpEmail`](../../auth-service/src/main/java/com/kyro/auth/security/otp/OtpService.java).
 2. `auth-service` publish payload `{email, otp, expirationMinutes}` vào `notification-exchange` với routing key `notification.otp`.
-3. [`NotificationListener.receiveOtpNotification`](../../notification-service/src/main/java/com/kyro/notification/listener/NotificationListener.java) đọc `otp-queue` và gọi `EmailService.sendOtpEmail`.
+3. [`NotificationListener.receiveOtpNotification`](../../notification-service/src/main/java/com/kyro/notification/listener/NotificationListener.java) đọc `notification-otp-queue` và gọi `EmailService.sendOtpEmail`.
 
-`notification-service` là nơi khai báo `notification-exchange`, `otp-queue`, `order-queue` và các binding tương ứng.
+`notification-service` là nơi khai báo `notification-exchange`, `notification-otp-queue`, `notification-order-confirmed-queue`, các `.dlq` và binding tương ứng.
 
 ### 1.5. Sự kiện đồng bộ sản phẩm sang AI
 

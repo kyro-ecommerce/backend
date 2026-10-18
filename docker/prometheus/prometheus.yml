@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "kyro-microservices"
+    metrics_path: "/actuator/prometheus"
+    static_configs:
+      - targets:
+          - "eureka-server:8761"
+          - "config-server:8888"
+          - "api-gateway:8080"
+          - "auth-service:8081"
+          - "catalog-service:8082"
+          - "cart-service:8083"
+          - "notification-service:8084"
+          - "order-service:8085"
+          - "payment-service:8086"
+
+  - job_name: "rabbitmq"
+    metrics_path: "/metrics/per-object"
+    static_configs:
+      - targets:
+          - "rabbitmq:15692"
+
+  - job_name: "rabbitmq-overview"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets:
+          - "rabbitmq:15692"

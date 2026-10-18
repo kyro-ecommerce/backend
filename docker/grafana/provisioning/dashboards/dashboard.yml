@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: "Kyro Dashboards"
+    orgId: 1
+    folder: "Kyro Tech Shop"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
