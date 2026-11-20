@@ -159,6 +159,7 @@ spring:
             - Path=/api/v1/ai/chat/stream
           filters:
             - StripPrefix=0
+            - AiIdentityFilter
 
         # Route to AI Service (Public with Rate Limiter & Circuit Breaker)
         - id: ai-service-public
@@ -167,6 +168,7 @@ spring:
             - Path=/api/v1/ai/**
           filters:
             - StripPrefix=0
+            - AiIdentityFilter
             - name: RequestRateLimiter
               args:
                 redis-rate-limiter.replenishRate: 10
@@ -219,6 +221,10 @@ spring:
             - Path=/notification-service/v3/api-docs
           filters:
             - SetPath=/v3/api-docs
+
+internal:
+  api:
+    token: ${INTERNAL_API_TOKEN:}
 
 auth:
   token:
