@@ -45,7 +45,10 @@ public class AiIdentityFilter extends AbstractGatewayFilterFactory<AiIdentityFil
       }
       String suffix = path.substring(PREFIX.length());
       HttpMethod method = request.getMethod();
-      boolean view = HttpMethod.POST.equals(method) && suffix.equals("/interactions/view");
+      // Browser behaviour events: actor comes from the JWT (or none), never the body.
+      boolean view =
+          HttpMethod.POST.equals(method)
+              && (suffix.equals("/interactions/view") || suffix.equals("/interactions/event"));
       boolean personalized =
           HttpMethod.GET.equals(method)
               && suffix.matches("/recommendations/personalized/[1-9][0-9]*");
@@ -53,7 +56,7 @@ public class AiIdentityFilter extends AbstractGatewayFilterFactory<AiIdentityFil
           (HttpMethod.GET.equals(method)
                   && (PUBLIC_GET.contains(suffix)
                       || suffix.matches(
-                          "/recommendations/(similar|accessories|complementary)/[1-9][0-9]*")))
+                          "/recommendations/(similar|accessories)/[1-9][0-9]*")))
               || (HttpMethod.POST.equals(method) && PUBLIC_POST.contains(suffix));
       if (!view && !personalized && !publicRoute) {
         return reject(exchange, HttpStatus.FORBIDDEN, "Unsupported AI route");
