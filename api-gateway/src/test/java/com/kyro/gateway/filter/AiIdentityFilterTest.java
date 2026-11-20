@@ -81,6 +81,38 @@ class AiIdentityFilterTest {
   }
 
   @Test
+  void behaviourEventUsesTokenIdentityAndGatewayCredential() {
+    var guest =
+        MockServerWebExchange.from(
+            MockServerHttpRequest.post("/api/v1/ai/interactions/event")
+                .header("X-User-Id", "42")
+                .header("X-Internal-Token", "forged"));
+    var guestHeaders = forward(guest, "test-only-internal").getRequest().getHeaders();
+    assertNull(guestHeaders.getFirst("X-User-Id"));
+    assertEquals(List.of("test-only-internal"), guestHeaders.get("X-Internal-Token"));
+
+    var signedIn =
+        MockServerWebExchange.from(
+            MockServerHttpRequest.post("/api/v1/ai/interactions/event")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + access(42, false))
+                .header("X-User-Id", "999"));
+    var headers = forward(signedIn, "test-only-internal").getRequest().getHeaders();
+    assertEquals(List.of("42"), headers.get("X-User-Id"));
+  }
+
+  @Test
+  void legacyInteractionRecordAndComplementaryRoutesStayBlocked() {
+    for (var request :
+        List.of(
+            MockServerHttpRequest.post("/api/v1/ai/interactions/record"),
+            MockServerHttpRequest.get("/api/v1/ai/recommendations/complementary/1"))) {
+      var exchange = MockServerWebExchange.from(request);
+      assertNull(forward(exchange, "test-only-internal"));
+      assertEquals(HttpStatus.FORBIDDEN, exchange.getResponse().getStatusCode());
+    }
+  }
+
+  @Test
   void realSignedAccessTokenAssertsItsOwnIdentityOnChatAndSse() {
     for (String path : List.of("/chat", "/chat/stream", "/search", "/chat/feedback")) {
       var exchange =
