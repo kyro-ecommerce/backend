@@ -13,7 +13,9 @@ import com.kyro.enums.PaymentStatus;
 import com.kyro.exceptions.DomainException;
 import com.kyro.order.client.CatalogClient;
 import com.kyro.order.dto.OrderDTO;
+import com.kyro.order.event.OrderCancelledEvent;
 import com.kyro.order.event.OrderConfirmedEvent;
+import com.kyro.order.event.StockResultEvent;
 import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -243,10 +245,12 @@ class OrderServiceTest {
               assertEquals(new CatalogClient.StockAdjustmentRequest(7L, 2), arguments[1]);
               return null;
             });
-    OrderService service = new OrderService(repository, null, catalog, null, null, null);
+    List<Object> events = new ArrayList<>();
+    OrderService service = new OrderService(repository, null, catalog, null, null, events::add);
 
     assertTrue(service.expireVnpayOrder(42L, expiration));
 
+    assertEquals(List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 2)))), events);
     assertTrue(adjusted[0]);
     assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
     assertEquals(PaymentStatus.CANCELLED, order.getPaymentStatus());
@@ -301,12 +305,92 @@ class OrderServiceTest {
     Order order = order(PaymentStatus.PENDING, false);
     order.setId(42L);
     order.setExpiresAt(expiration);
-    OrderService service = new OrderService(repositoryFor(order), null, null, null, null, null);
+    List<Object> events = new ArrayList<>();
+    OrderService service =
+        new OrderService(repositoryFor(order), null, null, null, null, events::add);
 
     assertTrue(service.expireVnpayOrder(42L, expiration));
 
+    assertEquals(1, events.size());
+
     assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
     assertEquals(PaymentStatus.CANCELLED, order.getPaymentStatus());
+  }
+
+  @Test
+  void cancelOrderPublishesPiiFreeEventWithQuantitiesPerProduct() {
+    Order order = order(PaymentStatus.PENDING, false);
+    order.setId(42L);
+    order.setPaymentMethod(PaymentMethod.COD);
+    order.setOrderStatus(OrderStatus.CONFIRMED);
+    OrderItem sameProductOtherVariant = new OrderItem();
+    sameProductOtherVariant.setProductId(3L);
+    sameProductOtherVariant.setQuantity(1);
+    OrderItem otherProduct = new OrderItem();
+    otherProduct.setProductId(8L);
+    otherProduct.setQuantity(4);
+    order.setOrderItems(
+        List.of(order.getOrderItems().iterator().next(), sameProductOtherVariant, otherProduct));
+    List<Object> events = new ArrayList<>();
+    OrderService service =
+        new OrderService(repositoryFor(order), null, null, null, null, events::add);
+
+    service.cancelOrder(42L);
+
+    assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
+    assertEquals(
+        List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 3), item(8L, 4)))), events);
+    assertFalse(
+        java.util.Arrays.stream(OrderCancelledEvent.class.getRecordComponents())
+            .anyMatch(component -> component.getName().toLowerCase().contains("email")));
+  }
+
+  @Test
+  void rejectedCancellationPublishesNothing() {
+    Order order = order(PaymentStatus.CANCELLED, false);
+    order.setId(42L);
+    order.setOrderStatus(OrderStatus.CANCELLED);
+    List<Object> events = new ArrayList<>();
+    OrderService service =
+        new OrderService(repositoryFor(order), null, null, null, null, events::add);
+
+    assertThrows(DomainException.class, () -> service.cancelOrder(42L));
+
+    assertTrue(events.isEmpty());
+  }
+
+  @Test
+  void stockFailurePublishesCancellationOnlyOnce() {
+    Order order = order(PaymentStatus.PENDING, false);
+    order.setId(42L);
+    order.setPaymentMethod(PaymentMethod.COD);
+    List<Object> events = new ArrayList<>();
+    OrderService service =
+        new OrderService(repositoryFor(order), null, null, null, null, events::add);
+
+    service.handleStockResult(new StockResultEvent(42L, 10L, false, "out of stock"));
+    service.handleStockResult(new StockResultEvent(42L, 10L, false, "out of stock"));
+
+    assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
+    assertEquals(List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 2)))), events);
+  }
+
+  @Test
+  void stockSuccessPublishesNoCancellation() {
+    Order order = order(PaymentStatus.PENDING, false);
+    order.setId(42L);
+    order.setPaymentMethod(PaymentMethod.VNPAY);
+    List<Object> events = new ArrayList<>();
+    OrderService service =
+        new OrderService(repositoryFor(order), null, null, null, null, events::add);
+
+    service.handleStockResult(new StockResultEvent(42L, 10L, true, null));
+
+    assertTrue(events.stream().noneMatch(OrderCancelledEvent.class::isInstance));
+  }
+
+  private static OrderCancelledEvent.Item item(Long productId, int quantity) {
+    return new OrderCancelledEvent.Item(productId, quantity);
   }
 
   @Test
@@ -412,6 +496,7 @@ class OrderServiceTest {
     item.setSize("M");
     item.setQuantity(2);
     Order order = new Order();
+    order.setUserId(10L);
     order.setPaymentMethod(PaymentMethod.VNPAY);
     order.setPaymentStatus(paymentStatus);
     order.setOrderStatus(OrderStatus.PENDING);

@@ -547,7 +547,9 @@ public class OrderService {
       log.info("Order ID {} cancelled. Payment status set to CANCELLED.", orderId);
     }
 
-    return orderRepository.save(order);
+    Order saved = orderRepository.save(order);
+    publishOrderCancelled(saved);
+    return saved;
   }
 
   @Transactional
@@ -703,6 +705,7 @@ public class OrderService {
     order.setOrderStatus(OrderStatus.CANCELLED);
     order.setPaymentStatus(PaymentStatus.CANCELLED);
     orderRepository.save(order);
+    publishOrderCancelled(order);
     log.info("Cancelled expired unpaid VNPAY order {}.", orderId);
     return true;
   }
@@ -729,6 +732,9 @@ public class OrderService {
     applyStockResult(order, event.success());
     orderRepository.save(order);
     publishOrderConfirmationIfNewlyConfirmed(wasPending, order);
+    if (isNewlyCancelled(wasPending, order)) {
+      publishOrderCancelled(order);
+    }
   }
 
   static void applyStockResult(Order order, boolean success) {
@@ -760,6 +766,31 @@ public class OrderService {
     if (isNewlyConfirmed(wasPending, order)) {
       publishOrderConfirmation(order);
     }
+  }
+
+  static boolean isNewlyCancelled(boolean wasPending, Order order) {
+    return wasPending && order.getOrderStatus() == OrderStatus.CANCELLED;
+  }
+
+  /** Builds the PII-free cancellation event: product quantities summed across variants. */
+  static com.kyro.order.event.OrderCancelledEvent orderCancelledEvent(Order order) {
+    Map<Long, Integer> quantities = new LinkedHashMap<>();
+    order
+        .getOrderItems()
+        .forEach(item -> quantities.merge(item.getProductId(), item.getQuantity(), Integer::sum));
+    return new com.kyro.order.event.OrderCancelledEvent(
+        order.getId(),
+        order.getUserId(),
+        quantities.entrySet().stream()
+            .map(
+                entry ->
+                    new com.kyro.order.event.OrderCancelledEvent.Item(
+                        entry.getKey(), entry.getValue()))
+            .toList());
+  }
+
+  private void publishOrderCancelled(Order order) {
+    eventPublisher.publishEvent(orderCancelledEvent(order));
   }
 
   static boolean isNewlyConfirmed(boolean wasPending, Order order) {
