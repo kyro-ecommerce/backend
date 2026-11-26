@@ -6,8 +6,10 @@ WORKDIR /build
 COPY mvnw pom.xml ./
 COPY .mvn .mvn
 COPY ${SERVICE}/pom.xml ${SERVICE}/pom.xml
-RUN --mount=type=cache,target=/root/.m2 sed -i 's/\r$//' mvnw && chmod +x mvnw \
-    && ./mvnw -B -f ${SERVICE}/pom.xml dependency:go-offline
+COPY reliability reliability
+RUN sed -i 's/\r$//' mvnw && chmod +x mvnw
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -B -N install && ./mvnw -B -f reliability/pom.xml install -Dmaven.test.skip=true
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -B -f ${SERVICE}/pom.xml dependency:go-offline
 
 COPY ${SERVICE}/src ${SERVICE}/src
 RUN --mount=type=cache,target=/root/.m2 ./mvnw -B -f ${SERVICE}/pom.xml package -Dmaven.test.skip=true

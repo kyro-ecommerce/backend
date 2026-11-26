@@ -121,7 +121,7 @@ spring:
         - id: payment-service-public
           uri: lb://payment-service
           predicates:
-            - Path=/api/v1/payment-providers/vnpay/callback
+            - Path=/api/v1/payment-providers/vnpay/callback,/api/v1/payment-providers/vnpay/ipn
           filters:
             - StripPrefix=0
 
@@ -129,10 +129,17 @@ spring:
         - id: payment-service-authenticated
           uri: lb://payment-service
           predicates:
-            - Path=/api/v1/orders/*/payments, /api/v1/orders/*/payment
+            - Path=/api/v1/orders/*/payments, /api/v1/orders/*/payment, /api/v1/orders/*/payment/transactions
           filters:
             - StripPrefix=0
             - AuthenticationFilter
+
+        - id: payment-service-admin
+          uri: lb://payment-service
+          predicates:
+            - Path=/api/v1/admin/payments/**
+          filters:
+            - AuthenticationFilter=ADMIN
 
         # Route to Order Service with Authentication Filter
         - id: order-service

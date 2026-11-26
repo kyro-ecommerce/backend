@@ -55,8 +55,7 @@ public class AiIdentityFilter extends AbstractGatewayFilterFactory<AiIdentityFil
       boolean publicRoute =
           (HttpMethod.GET.equals(method)
                   && (PUBLIC_GET.contains(suffix)
-                      || suffix.matches(
-                          "/recommendations/(similar|accessories)/[1-9][0-9]*")))
+                      || suffix.matches("/recommendations/(similar|accessories)/[1-9][0-9]*")))
               || (HttpMethod.POST.equals(method) && PUBLIC_POST.contains(suffix));
       if (!view && !personalized && !publicRoute) {
         return reject(exchange, HttpStatus.FORBIDDEN, "Unsupported AI route");

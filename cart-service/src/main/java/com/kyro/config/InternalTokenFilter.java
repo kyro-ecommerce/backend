@@ -23,7 +23,11 @@ public class InternalTokenFilter extends OncePerRequestFilter {
   protected void doFilterInternal(
       HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
       throws ServletException, IOException {
-    if (!request.getRequestURI().startsWith("/api/v1/internal/")) {
+    if (!request.getRequestURI().startsWith("/api/v1/internal/")
+        && !request.getRequestURI().startsWith("/api/v1/orders")
+        && !request.getRequestURI().startsWith("/api/v1/admin/")
+        && request.getHeader("X-User-Id") == null
+        && request.getHeader("X-User-Roles") == null) {
       filterChain.doFilter(request, response);
       return;
     }

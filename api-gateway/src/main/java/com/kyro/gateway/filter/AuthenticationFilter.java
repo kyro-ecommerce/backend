@@ -4,10 +4,12 @@ import com.kyro.gateway.util.JwtUtils;
 import io.jsonwebtoken.Claims;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilter;
 import org.springframework.cloud.gateway.filter.factory.AbstractGatewayFilterFactory;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
@@ -22,6 +24,9 @@ public class AuthenticationFilter
 
   private final JwtUtils jwtUtils;
 
+  @Value("${internal.api.token:}")
+  private String internalToken;
+
   public AuthenticationFilter(JwtUtils jwtUtils) {
     super(Config.class);
     this.jwtUtils = jwtUtils;
@@ -32,7 +37,7 @@ public class AuthenticationFilter
     return (exchange, chain) -> {
       ServerHttpRequest request = exchange.getRequest();
 
-      if (org.springframework.http.HttpMethod.OPTIONS.equals(request.getMethod())) {
+      if (HttpMethod.OPTIONS.equals(request.getMethod())) {
         return chain.filter(exchange);
       }
 
@@ -52,16 +57,43 @@ public class AuthenticationFilter
       }
 
       Claims claims = jwtUtils.getClaims(token);
+      if (!(claims.get("roles") instanceof List<?>)
+          || claims.getId() == null
+          || claims.getId().isBlank()
+          || claims.getExpiration() == null) {
+        return onError(exchange, "Access token required", HttpStatus.UNAUTHORIZED);
+      }
       String userId = String.valueOf(claims.get("id"));
+      try {
+        if (Long.parseLong(userId) <= 0) throw new NumberFormatException();
+      } catch (NumberFormatException error) {
+        return onError(exchange, "Invalid user identity", HttpStatus.UNAUTHORIZED);
+      }
+      if (internalToken == null || internalToken.isBlank()) {
+        return onError(
+            exchange, "Internal authentication unavailable", HttpStatus.SERVICE_UNAVAILABLE);
+      }
       String email = claims.getSubject();
       List<?> roles = claims.get("roles", List.class);
       String rolesStr =
-          roles != null ? String.join(",", roles.stream().map(Object::toString).toList()) : "";
+          roles != null
+              ? String.join(
+                  ",",
+                  roles.stream()
+                      .filter(String.class::isInstance)
+                      .map(String.class::cast)
+                      .map(AuthenticationFilter::normalizeRole)
+                      .toList())
+              : "";
 
       if (config.requiredRole != null
           && !config.requiredRole.isBlank()
           && (roles == null
-              || roles.stream().noneMatch(role -> config.requiredRole.equals(role.toString())))) {
+              || roles.stream()
+                  .filter(String.class::isInstance)
+                  .map(String.class::cast)
+                  .map(AuthenticationFilter::normalizeRole)
+                  .noneMatch(role -> normalizeRole(config.requiredRole).equals(role)))) {
         return onError(exchange, "Admin role required", HttpStatus.FORBIDDEN, "FORBIDDEN");
       }
 
@@ -76,6 +108,7 @@ public class AuthenticationFilter
                     h.remove("X-User-Roles");
                     h.remove("X-Internal-Token");
                   })
+              .header("X-Internal-Token", internalToken)
               .header("X-User-Id", userId)
               .header("X-User-Email", email)
               .header("X-User-Roles", rolesStr)
@@ -109,6 +142,11 @@ public class AuthenticationFilter
     return response.writeWith(Mono.just(buffer));
   }
 
+  private static String normalizeRole(String role) {
+    String value = role.trim();
+    return value.startsWith("ROLE_") ? value.substring(5) : value;
+  }
+
   public static class Config {
     private String requiredRole;
 
@@ -122,7 +160,7 @@ public class AuthenticationFilter
   }
 
   @Override
-  public java.util.List<String> shortcutFieldOrder() {
-    return java.util.List.of("requiredRole");
+  public List<String> shortcutFieldOrder() {
+    return List.of("requiredRole");
   }
 }

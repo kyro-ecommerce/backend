@@ -256,8 +256,6 @@ services:
       args:
         SERVICE: order-service
     container_name: kyro-order-service
-    ports:
-      - "8085:8085"
     depends_on:
       eureka-server:
         condition: service_healthy
