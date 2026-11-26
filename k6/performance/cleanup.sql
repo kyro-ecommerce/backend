@@ -1,3 +1,4 @@
+-- Only for disposable performance databases. Never reuse fixture IDs against live outboxes/queues.
 \set ON_ERROR_STOP on
 
 \connect kyro_auth
@@ -19,8 +20,11 @@ SELECT setval(pg_get_serial_sequence('orders', 'id'), greatest(coalesce((SELECT 
 COMMIT;
 
 \connect kyro_payment
-DELETE FROM payment_details WHERE order_id >= 999999;
-SELECT setval(pg_get_serial_sequence('payment_details', 'id'), greatest(coalesce((SELECT max(id) FROM payment_details), 1), 1));
+UPDATE payments SET winning_transaction_id=NULL WHERE order_id >= 999999;
+DELETE FROM payment_transactions WHERE payment_id IN (SELECT id FROM payments WHERE order_id >= 999999);
+DELETE FROM payment_order_cancellations WHERE order_id >= 999999;
+DELETE FROM payments WHERE order_id >= 999999;
+SELECT setval(pg_get_serial_sequence('payments', 'id'), greatest(coalesce((SELECT max(id) FROM payments), 1), 1));
 
 \connect kyro_catalog
 UPDATE product_variant SET stock = CASE id

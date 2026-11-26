@@ -1,3 +1,4 @@
+-- Only for disposable performance databases. Never reuse fixture IDs against live outboxes/queues.
 \set ON_ERROR_STOP on
 
 \connect kyro_auth
@@ -53,12 +54,17 @@ COMMIT;
 
 \connect kyro_payment
 BEGIN;
-DELETE FROM payment_details WHERE order_id >= 999999;
-INSERT INTO payment_details
-  (id, order_id, payment_method, payment_status, transaction_id, total_amount, created_at, updated_at)
-SELECT 9000000 + i, 9000000 + i, 'VNPAY', 'PENDING', 'perf-' || (9000000 + i), 100, now(), now()
+UPDATE payments SET winning_transaction_id=NULL WHERE order_id >= 999999;
+DELETE FROM payment_transactions WHERE payment_id IN (SELECT id FROM payments WHERE order_id >= 999999);
+DELETE FROM payment_order_cancellations WHERE order_id >= 999999;
+DELETE FROM payments WHERE order_id >= 999999;
+INSERT INTO payments
+  (id, order_id, payment_method, payment_status, total_amount, created_at, updated_at)
+SELECT 9000000 + i, 9000000 + i, 'VNPAY', 'PENDING', 100, now(), now()
 FROM generate_series(0, 39999) i;
-SELECT setval(pg_get_serial_sequence('payment_details', 'id'), 999999, false);
+INSERT INTO payment_transactions(payment_id,transaction_reference,amount,transaction_status)
+SELECT id,'perf-' || order_id,100,'PENDING' FROM payments WHERE id >= 9000000;
+SELECT setval(pg_get_serial_sequence('payments', 'id'), 999999, false);
 COMMIT;
 
 \connect kyro_catalog

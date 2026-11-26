@@ -116,17 +116,19 @@ graph TB
     PAYMENT --> VNPAY
 ```
 
-The repository contains nine Maven modules and a Docker Compose environment with thirteen services. The AI service is a separate application configured through `AI_SERVICE_URI`; it is not built or started by this repository.
+The repository contains ten Maven modules (nine applications plus the shared reliability library) and a Docker Compose environment with thirteen services. The AI service is a separate application configured through `AI_SERVICE_URI`; it is not built or started by this repository.
 
 ### Request and event flow
 
 1. Clients send public and authenticated requests through the API Gateway.
-2. The Gateway validates JWTs, enforces route-level roles, removes untrusted identity headers, and forwards verified `X-User-*` headers to downstream services.
+2. The Gateway validates JWTs, enforces route-level roles, removes untrusted identity headers, and forwards verified `X-User-*` headers with an internal credential to downstream services.
 3. Cart revalidates the selected `variantId`, active status, stock, and backend-calculated price; Order stores immutable item snapshots and publishes `order.created`.
 4. Catalog reserves stock by `variantId` and publishes `stock.reserved` or `stock.failed`.
-5. A successful reservation updates the order and removes only the purchased cart items. A failed reservation cancels the order.
-6. Payment publishes `payment.status.updated` after its database transaction commits; Order consumes the event and updates payment state.
-7. Auth and Order publish email events consumed by Notification. Catalog publishes product lifecycle events for the external AI index.
+5. A reservation updates Order. `order.confirmed` removes purchased cart quantities: immediately for COD, after successful payment for VNPay. A failed reservation cancels the order.
+6. Order, Payment and Catalog persist events in transactional outboxes. Confirmed, persistent RabbitMQ delivery is retried; consumers handle duplicates. Payment keeps every VNPay attempt and exposes callback/IPN endpoints.
+7. Cancellation durably requests reservation release. Catalog publishes lifecycle snapshots and per-variant stock revisions. AI records purchases only on `order.delivered`. Email remains best effort.
+
+See [docs/architecture.md](docs/architecture.md) for service communication boundaries, transactional outbox topology, multi-attempt payment reconciliation, and operational runbooks.
 
 ### Checkout saga
 
@@ -149,11 +151,9 @@ sequenceDiagram
     alt Stock is available
         Catalog->>Catalog: Decrease inventory by variantId
         Catalog-->>Broker: stock.reserved
-        par Update order
-            Broker-->>Order: Confirm or await online payment
-        and Clean purchased items
-            Broker-->>Cart: Remove purchased cart lines
-        end
+        Broker-->>Order: Confirm COD or await VNPay success
+        Order-->>Broker: order.confirmed (only when ready)
+        Broker-->>Cart: Remove purchased quantities
     else Stock reservation fails
         Catalog-->>Broker: stock.failed
         Broker-->>Order: Cancel order
@@ -245,65 +245,70 @@ Run `task --list` to see all service-specific and k6 commands.
 
 ## Configuration
 
-`.env.example` documents the available local settings. Before starting the stack, replace placeholder values for application secrets and any integrations you intend to exercise, including JWT/internal tokens, mail, OAuth2, Cloudinary, and VNPay.
+Copy `.env.example` to `.env` and replace all placeholder secrets before starting the stack. Never commit `.env` or live credentials.
 
-Do not commit `.env` or real credentials. See the [environment variable guide](docs/setup/environment-variables.md) for details.
+| Group | Required Variables | Purpose |
+| --- | --- | --- |
+| PostgreSQL | `DATABASE_USERNAME`, `DATABASE_PASSWORD`, `DATABASE_DB` | Container credentials; each service overrides its JDBC URL to an isolated database |
+| Security | `JWT_SECRET`, `INTERNAL_API_TOKEN` | HMAC signing secret for Auth/Gateway and shared token protecting internal/identity-bearing routes |
+| Mail & Branding | `MAIL_USERNAME`, `MAIL_PASSWORD`, `COMPANY_LOGO_URL` | SMTP credentials and branding for asynchronous OTP and order emails |
+| Media | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Product image uploads and deletions in Catalog |
+| Payments | `VNPAY_TMN_CODE`, `VNPAY_HASH_SECRET`, `VNPAY_PAY_URL`, `VNPAY_RETURN_URL` | VNPay URL signing, browser return verification, and server-to-server IPN validation |
+
+Optional integration variables include `AI_SERVICE_URI` (defaults to `http://host.docker.internal:8000` inside Compose) and OAuth2 client credentials (`GOOGLE_*`, `GITHUB_*`). In production, enable `USE_SECURE_COOKIE=true` behind TLS, restrict CORS origins, and expose only the API Gateway publicly.
 
 ## API Documentation
 
-With the services running, open the aggregated Scalar UI at <http://localhost:8080/scalar>. Individual OpenAPI specifications are proxied through the Gateway, for example:
+With the services running, open the aggregated Scalar UI at <http://localhost:8080/scalar>. Individual OpenAPI specifications are proxied through the Gateway:
 
 ```text
 http://localhost:8080/auth-service/v3/api-docs
 http://localhost:8080/catalog-service/v3/api-docs
 http://localhost:8080/cart-service/v3/api-docs
+http://localhost:8080/order-service/v3/api-docs
+http://localhost:8080/payment-service/v3/api-docs
+http://localhost:8080/notification-service/v3/api-docs
 ```
+
+Send client traffic through port `8080` with `Authorization: Bearer <accessToken>` on protected routes. Downstream services reject unauthenticated `X-User-*` headers and internal `/api/v1/internal/**` calls that do not carry a valid `X-Internal-Token`.
 
 ## Development and Testing
 
 ```bash
-./mvnw test              # Run the Maven tests
-./mvnw spotless:check    # Verify Google Java Format
-./mvnw clean package     # Build all Maven modules
+./mvnw test              # Run unit tests across modules
+./mvnw verify            # Run full test suite including Testcontainers integration tests
+./mvnw spotless:check    # Verify Google Java Format compliance
+./mvnw clean package     # Package all Maven modules
 ```
 
-The [`k6/performance`](k6/performance/) directory contains focused Feign, RabbitMQ, and failed-payment measurements. The scenarios use isolated SQL fixtures and locally signed JWTs; they do not require a real customer account or measure the external AI service.
+Integration tests in `reliability`, `catalog-service`, and `payment-service` spin up isolated PostgreSQL and RabbitMQ containers via Testcontainers and never touch local development databases.
 
-### Verified local performance
+The [`k6/performance`](k6/performance/) directory provides load-testing scenarios covering synchronous OpenFeign checkout validation, asynchronous RabbitMQ payment propagation, and failed-payment handling against disposable fixtures.
 
-Measured with Docker limited to 4 vCPU and 8 GB RAM. Headline values use the minimum throughput, worst p95, minimum success rate, and maximum backlog-after-drain across three runs.
+## Architecture Deep Dive
 
-| Scenario | Throughput | Worst p95 | Success | Dropped | Backlog after drain |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Warm Feign order path | 249.909 req/s | 539 ms | 100% | 0 | 0 |
-| RabbitMQ payment propagation | 49.997 req/s | 112 ms | 100% | 0 | 0 |
+See [docs/architecture.md](docs/architecture.md) for detailed documentation on:
 
-The Feign boundary sweep found a sharp saturation cliff: 275 req/s passed once but failed on repeat, and 276 req/s failed with a 5.24 s p95 and 665 dropped iterations. Therefore 250 req/s remains the highest defensible three-run result rather than selecting the best isolated probe.
-
-See the [backend verification report](docs/verification.md) for the environment, warm-up scope, per-run results, raw evidence, database checks, and limitations. These are local development measurements, not production or cold-start capacity claims.
-
-For project-defense preparation and a source-verified explanation of the current implementation, read:
-
-- [Architecture overview](docs/architecture/overview.md)
-- [RabbitMQ and OpenFeign usage](docs/architecture/rabbitmq-feign-current-usage.md)
-- [Event-driven flows and failure risks](docs/architecture/event-driven-flow.md)
-- [Detailed defense handbook](docs/defense/defense-handbook.md)
-- [200 self-review questions](docs/defense/self-review-questions.md)
+- Synchronous OpenFeign vs. asynchronous RabbitMQ service boundaries
+- Transactional outbox delivery, dead-letter routing (`kyro.dlx`), and SQL replay runbook
+- Stock reservation state machine (`RESERVED` / `REJECTED` / `RELEASED`) and idempotent checkout
+- Multi-attempt VNPay reconciliation, signed IPN handling, and AI event projections
 
 ## Repository Layout
 
 ```text
 .
-├── api-gateway/          # Gateway, authentication filter, and routes
-├── auth-service/         # Identity and access management
-├── catalog-service/      # Catalog, stock, reviews, and images
-├── cart-service/         # Persistent cart and Redis cache
-├── order-service/        # Checkout and order lifecycle
-├── payment-service/      # VNPay integration
-├── notification-service/# RabbitMQ email consumer
-├── config-server/        # Centralized Spring configuration
-├── eureka-server/        # Service discovery
-├── docker/               # PostgreSQL initialization
-├── docs/                 # Architecture, service, API, and setup guides
-└── k6/                   # Performance and resilience scenarios
+├── reliability/          # Shared transactional outbox and RabbitMQ topology library
+├── api-gateway/          # Edge gateway, JWT/RBAC filters, and AI route bridging
+├── auth-service/         # Identity, JWT issuance, OAuth2, and OTP management
+├── catalog-service/      # Products, variants, stock reservations, reviews, and media
+├── cart-service/         # Persistent shopping cart and Redis cache
+├── order-service/        # Idempotent checkout and order lifecycle saga
+├── payment-service/      # Multi-attempt VNPay integration, IPN, and reconciliation
+├── notification-service/ # RabbitMQ email consumer
+├── config-server/        # Centralized Spring Cloud configuration
+├── eureka-server/        # Service discovery registry
+├── docker/               # PostgreSQL database initialization scripts
+├── docs/                 # System architecture and operational documentation
+└── k6/                   # Load and resilience test scenarios
 ```

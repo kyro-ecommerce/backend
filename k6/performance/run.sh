@@ -39,7 +39,7 @@ run_k6() {
   kill "$monitor_pid" 2>/dev/null || true
   wait "$monitor_pid" 2>/dev/null || true
   local peak at_stop end drain=0
-  peak=$(awk -F, 'NR>1 && $2 ~ /^(order-payment-status-queue|catalog-order-created-queue|cart-stock-reserved-queue|order-stock-result-queue)$/ {v[$1]+=$3+$4} END {for(t in v)if(v[t]>m)m=v[t]; print m+0}' "$rabbit")
+  peak=$(awk -F, 'NR>1 && $2 ~ /^(order-payment-status-queue|catalog-order-created-queue|cart-order-confirmed-queue|order-stock-result-queue)$/ {v[$1]+=$3+$4} END {for(t in v)if(v[t]>m)m=v[t]; print m+0}' "$rabbit")
   at_stop=$(queue_depth)
   end=$at_stop
   while [[ "$end" -gt 0 && "$drain" -lt 30 ]]; do sleep 1; drain=$((drain + 1)); end=$(queue_depth); done
@@ -59,7 +59,7 @@ start_results() {
 
 queue_depth() {
   docker exec kyro-rabbitmq rabbitmqctl -q list_queues name messages_ready messages_unacknowledged --formatter csv 2>/dev/null \
-    | awk -F, 'NR>1 {gsub(/"/,""); if($1 ~ /^(order-payment-status-queue|catalog-order-created-queue|cart-stock-reserved-queue|order-stock-result-queue)$/) n+=$2+$3} END {print n+0}'
+    | awk -F, 'NR>1 {gsub(/"/,""); if($1 ~ /^(order-payment-status-queue|catalog-order-created-queue|cart-order-confirmed-queue|order-stock-result-queue)$/) n+=$2+$3} END {print n+0}'
 }
 
 verify() {
@@ -70,7 +70,7 @@ verify() {
       "SELECT CASE WHEN id>=9000000 THEN 'payment_fixture' ELSE 'generated' END||','||order_status||'/'||payment_status||'/'||CASE WHEN stock_reserved THEN 'reserved' ELSE 'not_reserved' END||','||count(*) FROM orders WHERE user_id BETWEEN 100000 AND 139999 GROUP BY CASE WHEN id>=9000000 THEN 'payment_fixture' ELSE 'generated' END,order_status,payment_status,stock_reserved ORDER BY 1"
     echo "payment_events"
     docker exec kyro-postgres psql -U postgres -d kyro_payment -Atc \
-      "SELECT CASE WHEN order_id>=9000000 THEN 'payment_fixture' ELSE 'generated' END||','||payment_status||','||count(*) FROM payment_details WHERE order_id>=999999 GROUP BY CASE WHEN order_id>=9000000 THEN 'payment_fixture' ELSE 'generated' END,payment_status ORDER BY 1"
+      "SELECT CASE WHEN order_id>=9000000 THEN 'payment_fixture' ELSE 'generated' END||','||payment_status||','||count(*) FROM payments WHERE order_id>=999999 GROUP BY CASE WHEN order_id>=9000000 THEN 'payment_fixture' ELSE 'generated' END,payment_status ORDER BY 1"
     echo "stock"
     docker exec kyro-postgres psql -U postgres -d kyro_catalog -Atc \
       "SELECT product_id||'/'||variant_name||','||stock FROM product_variant WHERE id IN (1,4,6,8,10,12,14,16,18,20) ORDER BY id"
