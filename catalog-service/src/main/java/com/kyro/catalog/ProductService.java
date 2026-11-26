@@ -22,7 +22,6 @@ public class ProductService {
   private final CategoryRepository categories;
   private final ProductEventPublisher events;
   private final OrderClient orders;
-  private final ProcessedStockReservationRepository stockReservations;
 
   public ProductService(
       ProductRepository products,
@@ -31,14 +30,12 @@ public class ProductService {
       ImageService ignoredImages,
       ProductEventPublisher events,
       OrderClient orders,
-      ProductVariantRepository variants,
-      ProcessedStockReservationRepository stockReservations) {
+      ProductVariantRepository variants) {
     this.products = products;
     this.categories = categories;
     this.events = events;
     this.orders = orders;
     this.variants = variants;
-    this.stockReservations = stockReservations;
   }
 
   @Transactional(readOnly = true)
@@ -285,27 +282,7 @@ public class ProductService {
     int next = v.getStock() + delta;
     if (next < 0) throw new IllegalStateException("Insufficient stock");
     v.setStock(next);
-  }
-
-  @Transactional
-  public boolean reserveStock(Long orderId, List<Map<String, Object>> items) {
-    if (orderId != null && stockReservations.markReservedIfAbsent(orderId) == 0) {
-      log.info("Stock for Order ID #{} already reserved, skipping duplicate deduction", orderId);
-      return true;
-    }
-    List<Map<String, Object>> sortedItems = new ArrayList<>(items);
-    sortedItems.sort(Comparator.comparing(item -> Long.valueOf(item.get("variantId").toString())));
-    for (Map<String, Object> item : sortedItems) {
-      Long variantId = Long.valueOf(item.get("variantId").toString());
-      int quantity = Integer.parseInt(item.get("quantity").toString());
-      adjustStock(variantId, -quantity);
-    }
-    return true;
-  }
-
-  @Transactional
-  public void reserveStock(List<Map<String, Object>> items) {
-    reserveStock(null, items);
+    events.publishStock(v);
   }
 
   private void apply(
@@ -360,6 +337,15 @@ public class ProductService {
       target.setProduct(p);
       next.add(target);
     }
+    // Retain SKU identities referenced by old orders and active reservations.
+    // Removing a variant from the admin form disables it; it must remain releasable.
+    existing.values().stream()
+        .filter(v -> !ids.contains(v.getId()))
+        .forEach(
+            v -> {
+              v.setActive(false);
+              next.add(v);
+            });
     p.getVariants().clear();
     p.getVariants().addAll(next);
   }

@@ -27,7 +27,8 @@ public class OrderDeliveredEventListener {
     for (Map<String, Object> item :
         (List<Map<String, Object>>) event.getOrDefault("items", List.of())) {
       jdbc.update(
-          "UPDATE product SET quantity_sold = quantity_sold + ? WHERE id = ?",
+          "UPDATE product SET quantity_sold = quantity_sold + ?, lifecycle_revision ="
+              + " lifecycle_revision + 1 WHERE id = ?",
           Integer.valueOf(item.get("quantity").toString()),
           Long.valueOf(item.get("productId").toString()));
     }

@@ -1,30 +1,37 @@
 package com.kyro.order.messaging;
 
 import com.kyro.order.config.RabbitMQConfig;
+import com.kyro.order.event.CartConfirmedEvent;
 import com.kyro.order.event.OrderCancelledEvent;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import com.kyro.order.event.StockReleaseEvent;
+import com.kyro.reliability.Outbox;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
 
 @Component
 public class OrderCancelledEventPublisher {
-  private static final Logger log = LoggerFactory.getLogger(OrderCancelledEventPublisher.class);
-  private final RabbitTemplate rabbitTemplate;
+  private final Outbox outbox;
 
-  public OrderCancelledEventPublisher(RabbitTemplate rabbitTemplate) {
-    this.rabbitTemplate = rabbitTemplate;
+  public OrderCancelledEventPublisher(Outbox outbox) {
+    this.outbox = outbox;
   }
 
-  @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+  @EventListener
   public void publish(OrderCancelledEvent event) {
-    try {
-      rabbitTemplate.convertAndSend(
-          RabbitMQConfig.ORDER_EXCHANGE, RabbitMQConfig.ORDER_CANCELLED_ROUTING_KEY, event);
-    } catch (RuntimeException exception) {
-      log.error("Failed to publish OrderCancelledEvent for order {}", event.orderId(), exception);
-    }
+    outbox.append(
+        RabbitMQConfig.ORDER_EXCHANGE,
+        RabbitMQConfig.ORDER_CANCELLED_ROUTING_KEY,
+        event.orderId(),
+        event);
+  }
+
+  @EventListener
+  public void release(StockReleaseEvent event) {
+    outbox.append("order-exchange", "stock.release", event.orderId(), event);
+  }
+
+  @EventListener
+  public void confirmed(CartConfirmedEvent event) {
+    outbox.append("order-exchange", "order.confirmed", event.orderId(), event);
   }
 }

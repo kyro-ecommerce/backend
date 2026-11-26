@@ -11,10 +11,10 @@ public class RabbitMQConfig {
 
   public static final String ORDER_EXCHANGE = "order-exchange";
   public static final String DLX_EXCHANGE = "kyro.dlx";
-  public static final String STOCK_RESERVED_ROUTING_KEY = "stock.reserved";
+  public static final String STOCK_RESERVED_ROUTING_KEY = "order.confirmed";
 
-  public static final String CART_STOCK_RESERVED_QUEUE = "cart-stock-reserved-queue";
-  public static final String CART_STOCK_RESERVED_DLQ = "cart-stock-reserved-queue.dlq";
+  public static final String CART_STOCK_RESERVED_QUEUE = "cart-order-confirmed-queue";
+  public static final String CART_STOCK_RESERVED_DLQ = "cart-order-confirmed-queue.dlq";
   public static final String CART_CLEAR_QUEUE = CART_STOCK_RESERVED_QUEUE;
 
   @Bean

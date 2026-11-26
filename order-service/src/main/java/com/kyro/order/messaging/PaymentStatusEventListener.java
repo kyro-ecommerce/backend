@@ -23,7 +23,11 @@ public class PaymentStatusEventListener {
   @RabbitListener(queues = RabbitMQConfig.PAYMENT_STATUS_QUEUE)
   public void handle(PaymentStatusChangedEvent event) {
     try {
-      orderService.updatePaymentStatus(event.orderId(), toPaymentStatus(event.status()));
+      orderService.updatePaymentStatus(
+          event.orderId(),
+          toPaymentStatus(event.status()),
+          event.version(),
+          event.reviewRequired());
       log.info("Applied payment status {} to order {}", event.status(), event.orderId());
     } catch (IllegalArgumentException e) {
       log.error("Ignored invalid payment status {} for order {}", event.status(), event.orderId());

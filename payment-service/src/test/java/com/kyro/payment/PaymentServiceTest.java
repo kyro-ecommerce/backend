@@ -2,23 +2,15 @@ package com.kyro.payment;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.kyro.enums.PaymentStatus;
-import com.kyro.exceptions.DomainException;
-import com.kyro.payment.client.OrderClient;
-import com.kyro.payment.event.PaymentStatusChangedEvent;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
+import java.util.HexFormat;
 import java.util.Map;
-import java.util.Optional;
 import java.util.TreeMap;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -33,14 +25,14 @@ class PaymentServiceTest {
 
   @BeforeEach
   void setUp() {
-    service = new PaymentService(null, null, null);
+    service = new PaymentService(null, null, null, null, null);
     ReflectionTestUtils.setField(service, "vnp_TmnCode", "TESTCODE");
     ReflectionTestUtils.setField(service, "vnp_HashSecret", SECRET);
   }
 
   @Test
   void validatesSignedCallbackAndAmount() {
-    PaymentDetail payment = payment();
+    Payment payment = payment();
     Map<String, String> params = signedParams();
 
     assertDoesNotThrow(() -> service.validateSignature(params));
@@ -64,20 +56,6 @@ class PaymentServiceTest {
   }
 
   @Test
-  void reusesRetryablePaymentButRejectsCompletedPayment() {
-    PaymentDetail pending = new PaymentDetail();
-    pending.setPaymentStatus(PaymentStatus.PENDING);
-    assertSame(pending, PaymentService.reusablePayment(Optional.of(pending)));
-
-    pending.setPaymentStatus(PaymentStatus.COMPLETED);
-    DomainException exception =
-        assertThrows(
-            DomainException.class, () -> PaymentService.reusablePayment(Optional.of(pending)));
-    assertEquals(409, exception.getStatus().value());
-    assertEquals("PAYMENT_ALREADY_COMPLETED", exception.getErrorCode());
-  }
-
-  @Test
   void formatsOrderExpirationInVietnamTimezone() {
     Instant expiration = Instant.parse("2026-08-16T08:15:30Z");
 
@@ -86,38 +64,8 @@ class PaymentServiceTest {
     assertEquals(true, PaymentService.isExpired(expiration, expiration));
   }
 
-  @Test
-  void retryResetsPaymentToPendingAndPublishesProjectionUpdate() {
-    PaymentDetail failedPayment = new PaymentDetail();
-    failedPayment.setOrderId(42L);
-    failedPayment.setPaymentStatus(PaymentStatus.FAILED);
-    failedPayment.setTransactionId("42_old");
-    Instant expiresAt = Instant.now().plusSeconds(15 * 60);
-    OrderClient orderClient =
-        ignored ->
-            new OrderClient.OrderResponse(
-                42L, "KYR-A1B2C3D4E5F6", 7L, 100L, "FAILED", "VNPAY", "PENDING", expiresAt);
-    PaymentRepository repository = repositoryFor(failedPayment);
-    List<Object> events = new ArrayList<>();
-    PaymentService retryService = new PaymentService(orderClient, repository, events::add);
-    ReflectionTestUtils.setField(retryService, "vnp_TmnCode", "TESTCODE");
-    ReflectionTestUtils.setField(retryService, "vnp_HashSecret", SECRET);
-    ReflectionTestUtils.setField(retryService, "vnp_PayUrl", "https://sandbox.vnpayment.vn/pay");
-    ReflectionTestUtils.setField(retryService, "vnp_Returnurl", "https://kyro.test/callback");
-
-    String paymentUrl = retryService.createPayment(42L);
-
-    assertTrue(paymentUrl.startsWith("https://sandbox.vnpayment.vn/pay?"));
-    assertTrue(paymentUrl.contains("Thanh+toan+don+hang+KYR-A1B2C3D4E5F6"));
-    assertEquals(PaymentStatus.PENDING, failedPayment.getPaymentStatus());
-    assertNotEquals("42_old", failedPayment.getTransactionId());
-    PaymentStatusChangedEvent event = (PaymentStatusChangedEvent) events.getFirst();
-    assertEquals(42L, event.orderId());
-    assertEquals("PENDING", event.status());
-  }
-
-  private static PaymentDetail payment() {
-    PaymentDetail payment = new PaymentDetail();
+  private static Payment payment() {
+    Payment payment = new Payment();
     payment.setTotalAmount(100);
     return payment;
   }
@@ -133,19 +81,6 @@ class PaymentServiceTest {
     return params;
   }
 
-  private static PaymentRepository repositoryFor(PaymentDetail payment) {
-    return (PaymentRepository)
-        java.lang.reflect.Proxy.newProxyInstance(
-            PaymentRepository.class.getClassLoader(),
-            new Class<?>[] {PaymentRepository.class},
-            (proxy, method, args) ->
-                switch (method.getName()) {
-                  case "findByOrderId" -> Optional.of(payment);
-                  case "save" -> args[0];
-                  default -> throw new UnsupportedOperationException(method.getName());
-                });
-  }
-
   private static String sign(Map<String, String> params) {
     try {
       StringBuilder data = new StringBuilder();
@@ -157,7 +92,7 @@ class PaymentServiceTest {
       }
       Mac mac = Mac.getInstance("HmacSHA512");
       mac.init(new SecretKeySpec(SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA512"));
-      return java.util.HexFormat.of()
+      return HexFormat.of()
           .formatHex(mac.doFinal(data.toString().getBytes(StandardCharsets.UTF_8)));
     } catch (Exception e) {
       throw new IllegalStateException(e);

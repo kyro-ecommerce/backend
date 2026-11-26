@@ -13,6 +13,10 @@ public class Product {
   @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
+  @Version
+  @Column(name = "lifecycle_revision", nullable = false)
+  private long lifecycleRevision;
+
   @NotBlank
   @Size(max = 100)
   @Column(nullable = false, length = 100)

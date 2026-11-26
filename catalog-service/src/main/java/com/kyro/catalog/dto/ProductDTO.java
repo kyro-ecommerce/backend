@@ -75,7 +75,8 @@ public record ProductDTO(
       long price,
       long salePrice,
       int stock,
-      boolean active) {
+      boolean active,
+      long stockVersion) {
     VariantDTO(ProductVariant v, int discount) {
       this(
           v.getId(),
@@ -84,7 +85,8 @@ public record ProductDTO(
           v.getPrice(),
           Pricing.salePrice(v.getPrice(), discount),
           v.getStock(),
-          v.isActive());
+          v.isActive(),
+          v.getStockVersion());
     }
   }
 

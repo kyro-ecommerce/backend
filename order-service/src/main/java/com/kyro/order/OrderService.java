@@ -11,18 +11,30 @@ import com.kyro.order.dto.OrderDTO;
 import com.kyro.order.dto.OrderDetailDTO;
 import com.kyro.order.dto.ProductRevenueResponse;
 import com.kyro.order.dto.TopSellingProductResponse;
+import com.kyro.order.event.CartConfirmedEvent;
+import com.kyro.order.event.OrderCancelledEvent;
+import com.kyro.order.event.OrderConfirmedEvent;
+import com.kyro.order.event.OrderCreatedEvent;
+import com.kyro.order.event.OrderDeliveredEvent;
+import com.kyro.order.event.StockReleaseEvent;
+import com.kyro.order.event.StockResultEvent;
 import feign.FeignException;
 import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Predicate;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.HexFormat;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
@@ -30,6 +42,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -52,7 +65,7 @@ public class OrderService {
   private final ApplicationEventPublisher eventPublisher;
   private final TransactionTemplate transactionTemplate;
 
-  @org.springframework.beans.factory.annotation.Autowired
+  @Autowired
   public OrderService(
       OrderRepository orderRepository,
       OrderItemRepository orderItemRepository,
@@ -98,7 +111,7 @@ public class OrderService {
             () -> {
               log.warn("Order not found with ID: {}", orderId);
               return new DomainException(
-                  org.springframework.http.HttpStatus.NOT_FOUND,
+                  HttpStatus.NOT_FOUND,
                   "ORDER_NOT_FOUND",
                   "Không tìm thấy đơn hàng với ID: " + orderId);
             });
@@ -240,28 +253,33 @@ public class OrderService {
       long expectedTotalDiscountedPrice,
       String idempotencyKey) {
     String normalizedKey = clean(idempotencyKey);
+    if (normalizedKey != null && normalizedKey.length() > 100)
+      throw new IllegalArgumentException("Idempotency-Key too long");
+    String fingerprint =
+        fingerprint(
+            addressId, paymentMethod, cartItemIds, cartVersion, expectedTotalDiscountedPrice);
     if (normalizedKey != null) {
       Optional<Order> existing =
           orderRepository.findByUserIdAndIdempotencyKey(userId, normalizedKey);
       if (existing.isPresent()) {
         log.info("Idempotent replay hit (pre-check) for user {} key {}", userId, normalizedKey);
+        checkFingerprint(existing.get(), fingerprint);
         return List.of(existing.get());
       }
     }
+
+    // Perform synchronous Feign I/O validation OUTSIDE the DB transaction to avoid holding
+    // HikariCP connections across network calls (Connection Pool Starvation anti-pattern).
+    ValidatedOrderContext context =
+        validateAndFetchOrderContext(
+            addressId, userId, cartItemIds, cartVersion, expectedTotalDiscountedPrice);
 
     if (transactionTemplate != null) {
       try {
         return transactionTemplate.execute(
             status ->
-                placeOrderInternal(
-                    addressId,
-                    userId,
-                    userEmail,
-                    paymentMethod,
-                    cartItemIds,
-                    cartVersion,
-                    expectedTotalDiscountedPrice,
-                    normalizedKey));
+                persistOrderAndPublishEvent(
+                    userId, userEmail, paymentMethod, normalizedKey, fingerprint, context));
       } catch (DataIntegrityViolationException ex) {
         if (normalizedKey != null) {
           Optional<Order> concurrentWinner =
@@ -271,21 +289,15 @@ public class OrderService {
                 "Idempotent replay hit (concurrent race) for user {} key {}",
                 userId,
                 normalizedKey);
+            checkFingerprint(concurrentWinner.get(), fingerprint);
             return List.of(concurrentWinner.get());
           }
         }
         throw ex;
       }
     } else {
-      return placeOrderInternal(
-          addressId,
-          userId,
-          userEmail,
-          paymentMethod,
-          cartItemIds,
-          cartVersion,
-          expectedTotalDiscountedPrice,
-          normalizedKey);
+      return persistOrderAndPublishEvent(
+          userId, userEmail, paymentMethod, normalizedKey, fingerprint, context);
     }
   }
 
@@ -319,6 +331,56 @@ public class OrderService {
       long cartVersion,
       long expectedTotalDiscountedPrice,
       String idempotencyKey) {
+    ValidatedOrderContext context =
+        validateAndFetchOrderContext(
+            addressId, userId, cartItemIds, cartVersion, expectedTotalDiscountedPrice);
+    return persistOrderAndPublishEvent(
+        userId,
+        userEmail,
+        paymentMethod,
+        idempotencyKey,
+        fingerprint(
+            addressId, paymentMethod, cartItemIds, cartVersion, expectedTotalDiscountedPrice),
+        context);
+  }
+
+  static String fingerprint(
+      Long addressId, PaymentMethod method, List<Long> items, long version, long total) {
+    String canonical =
+        addressId
+            + ":"
+            + (method == null ? PaymentMethod.COD : method)
+            + ":"
+            + items.stream().sorted().toList()
+            + ":"
+            + version
+            + ":"
+            + total;
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256")
+                  .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException(error);
+    }
+  }
+
+  static void checkFingerprint(Order order, String fingerprint) {
+    if (order.getRequestFingerprint() != null && !order.getRequestFingerprint().equals(fingerprint))
+      throw new DomainException(
+          HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", "Idempotency-Key đã dùng với nội dung khác");
+  }
+
+  record ValidatedOrderContext(
+      CartClient.CartResponse cart, UserClient.AddressResponse addressResponse) {}
+
+  private ValidatedOrderContext validateAndFetchOrderContext(
+      Long addressId,
+      Long userId,
+      List<Long> cartItemIds,
+      long cartVersion,
+      long expectedTotalDiscountedPrice) {
     if (userId == null) {
       log.error("User ID is null when placing order.");
       throw new IllegalArgumentException("Thông tin người dùng không hợp lệ.");
@@ -329,34 +391,38 @@ public class OrderService {
     }
 
     if (new HashSet<>(cartItemIds).size() != cartItemIds.size()) {
-      throw new DomainException(
-          org.springframework.http.HttpStatus.BAD_REQUEST, "Cart item bị trùng.");
+      throw new DomainException(HttpStatus.BAD_REQUEST, "Cart item bị trùng.");
     }
     CartClient.CartResponse cart;
     try {
       cart = cartClient.getSelection(userId, new CartClient.CartSelectionRequest(cartItemIds));
-    } catch (FeignException e) {
-      if (e.status() == 503) {
+    } catch (Exception e) {
+      FeignException feignEx =
+          e instanceof FeignException fe
+              ? fe
+              : (e.getCause() instanceof FeignException causeFe ? causeFe : null);
+      if (feignEx != null) {
+        if (feignEx.status() == 503) {
+          throw new DomainException(
+              HttpStatus.SERVICE_UNAVAILABLE,
+              "CATALOG_UNAVAILABLE",
+              "Không thể xác minh sản phẩm.");
+        }
         throw new DomainException(
-            org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
-            "CATALOG_UNAVAILABLE",
-            "Không thể xác minh sản phẩm.");
+            HttpStatus.CONFLICT, "CART_CHANGED", "Giỏ hàng đã thay đổi, vui lòng tải lại.");
       }
-      throw new DomainException(
-          org.springframework.http.HttpStatus.CONFLICT,
-          "CART_CHANGED",
-          "Giỏ hàng đã thay đổi, vui lòng tải lại.");
+      throw e;
     }
     if (cart == null || cart.items() == null || cart.items().isEmpty()) {
       log.warn("Attempted to place order with an empty cart for user ID: {}", userId);
       throw new DomainException(
-          org.springframework.http.HttpStatus.CONFLICT,
+          HttpStatus.CONFLICT,
           "EMPTY_CART",
           "Giỏ hàng của bạn đang trống. Vui lòng thêm sản phẩm vào giỏ hàng trước khi đặt hàng.");
     }
     if (cart.version() != cartVersion || cart.totalSalePrice() != expectedTotalDiscountedPrice) {
       throw new DomainException(
-          org.springframework.http.HttpStatus.CONFLICT,
+          HttpStatus.CONFLICT,
           "CART_CHANGED",
           "Giỏ hàng hoặc giá sản phẩm đã thay đổi, vui lòng xác nhận lại.");
     }
@@ -366,10 +432,20 @@ public class OrderService {
     if (addrResp == null) {
       log.warn("Address not found with ID: {} for user ID: {}", addressId, userId);
       throw new DomainException(
-          org.springframework.http.HttpStatus.NOT_FOUND,
-          "ADDRESS_NOT_FOUND",
-          "Địa chỉ giao hàng không hợp lệ.");
+          HttpStatus.NOT_FOUND, "ADDRESS_NOT_FOUND", "Địa chỉ giao hàng không hợp lệ.");
     }
+    return new ValidatedOrderContext(cart, addrResp);
+  }
+
+  private List<Order> persistOrderAndPublishEvent(
+      Long userId,
+      String userEmail,
+      PaymentMethod paymentMethod,
+      String idempotencyKey,
+      String fingerprint,
+      ValidatedOrderContext context) {
+    CartClient.CartResponse cart = context.cart();
+    UserClient.AddressResponse addrResp = context.addressResponse();
 
     OrderAddress shippingAddress = new OrderAddress();
     shippingAddress.setFullName(addrResp.fullName());
@@ -404,6 +480,7 @@ public class OrderService {
     order.setPaymentStatus(PaymentStatus.PENDING);
     order.setStockReserved(false);
     order.setIdempotencyKey(idempotencyKey);
+    order.setRequestFingerprint(fingerprint);
     PaymentMethod selectedPaymentMethod = paymentMethod != null ? paymentMethod : PaymentMethod.COD;
     order.setPaymentMethod(selectedPaymentMethod);
     order.setExpiresAt(expirationFor(selectedPaymentMethod, Instant.now()));
@@ -417,13 +494,14 @@ public class OrderService {
     log.debug("Saved intermediate order ID: {}", savedOrderIntermediate.getId());
 
     List<OrderItem> orderItems = new ArrayList<>();
-    List<com.kyro.order.event.OrderCreatedEvent.OrderItemEvent> eventItems = new ArrayList<>();
+    List<OrderCreatedEvent.OrderItemEvent> eventItems = new ArrayList<>();
 
     for (CartClient.CartItemResponse cartItem : cart.items()) {
       OrderItem orderItem = new OrderItem();
       orderItem.setOrder(savedOrderIntermediate);
       orderItem.setProductId(cartItem.productId());
       orderItem.setVariantId(cartItem.variantId());
+      orderItem.setCartItemId(cartItem.id());
       orderItem.setSku(cartItem.sku());
       orderItem.setProductName(cartItem.productName());
       orderItem.setProductImageUrl(cartItem.productImageUrl());
@@ -436,7 +514,7 @@ public class OrderService {
       orderItems.add(orderItem);
 
       eventItems.add(
-          new com.kyro.order.event.OrderCreatedEvent.OrderItemEvent(
+          new OrderCreatedEvent.OrderItemEvent(
               cartItem.id(),
               cartItem.productId(),
               cartItem.variantId(),
@@ -450,8 +528,7 @@ public class OrderService {
     log.debug("Successfully created order ID: {} with status PENDING", finalSavedOrder.getId());
 
     eventPublisher.publishEvent(
-        new com.kyro.order.event.OrderCreatedEvent(
-            finalSavedOrder.getId(), userId, userEmail, eventItems));
+        new OrderCreatedEvent(finalSavedOrder.getId(), userId, userEmail, eventItems));
 
     return createdOrders;
   }
@@ -503,13 +580,11 @@ public class OrderService {
         .getOrderItems()
         .forEach(item -> quantities.merge(item.getProductId(), item.getQuantity(), Integer::sum));
     eventPublisher.publishEvent(
-        new com.kyro.order.event.OrderDeliveredEvent(
+        new OrderDeliveredEvent(
             orderId,
+            order.getUserId(),
             quantities.entrySet().stream()
-                .map(
-                    entry ->
-                        new com.kyro.order.event.OrderDeliveredEvent.Item(
-                            entry.getKey(), entry.getValue()))
+                .map(entry -> new OrderDeliveredEvent.Item(entry.getKey(), entry.getValue()))
                 .toList()));
     log.info("Order ID {} delivered.", orderId);
     return orderRepository.save(order);
@@ -518,21 +593,10 @@ public class OrderService {
   @Transactional
   public Order cancelOrder(Long orderId) {
     Order order = findOrderByIdForUpdate(orderId);
-    if (order.getOrderStatus() == OrderStatus.DELIVERED
+    if (order.getOrderStatus() == OrderStatus.SHIPPED
+        || order.getOrderStatus() == OrderStatus.DELIVERED
         || order.getOrderStatus() == OrderStatus.CANCELLED) {
       throw invalidOrderState("Không thể hủy đơn hàng ở trạng thái " + order.getOrderStatus());
-    }
-
-    if (!order.isStockReserved() && order.getOrderStatus() == OrderStatus.PENDING) {
-      throw new DomainException(
-          org.springframework.http.HttpStatus.CONFLICT,
-          "Đơn hàng đang chờ giữ hàng, vui lòng thử lại sau.");
-    }
-
-    if (order.isStockReserved()
-        && (order.getOrderStatus() == OrderStatus.PENDING
-            || order.getOrderStatus() == OrderStatus.CONFIRMED)) {
-      restoreStock(order);
     }
 
     order.setOrderStatus(OrderStatus.CANCELLED);
@@ -542,6 +606,7 @@ public class OrderService {
             && order.getPaymentStatus() == PaymentStatus.COMPLETED;
     applyCancellationPaymentStatus(order);
     if (paidVnpay) {
+      order.setPaymentReviewRequired(true);
       log.warn("Order ID {} cancelled after VNPAY completion; manual refund is required.", orderId);
     } else {
       log.info("Order ID {} cancelled. Payment status set to CANCELLED.", orderId);
@@ -576,11 +641,10 @@ public class OrderService {
   public void deleteOrder(Long orderId) {
     Order order = findOrderByIdForUpdate(orderId);
     if (order.getOrderStatus() != OrderStatus.CANCELLED
-        || order.getPaymentMethod() == PaymentMethod.VNPAY
-            && order.getPaymentStatus() == PaymentStatus.COMPLETED) {
+        || order.getPaymentMethod() == PaymentMethod.VNPAY) {
       throw new DomainException(
-          org.springframework.http.HttpStatus.CONFLICT,
-          "Chỉ có thể xóa đơn đã hủy và chưa thanh toán.");
+          HttpStatus.CONFLICT,
+          "Chỉ có thể xóa đơn COD đã hủy. Đơn VNPAY cần giữ lại để đối soát thanh toán đến muộn.");
     }
     orderRepository.delete(order);
     log.info("Order ID {} deleted successfully.", orderId);
@@ -662,13 +726,23 @@ public class OrderService {
 
   @Transactional
   public void updatePaymentStatus(Long orderId, PaymentStatus status) {
+    updatePaymentStatus(orderId, status, null);
+  }
+
+  @Transactional
+  public void updatePaymentStatus(Long orderId, PaymentStatus status, Long version) {
+    updatePaymentStatus(orderId, status, version, null);
+  }
+
+  @Transactional
+  public void updatePaymentStatus(
+      Long orderId, PaymentStatus status, Long version, Boolean reviewRequired) {
     Order order = findOrderByIdForUpdate(orderId);
+    if (version != null && version <= order.getPaymentEventVersion()) return;
+    if (version != null) order.setPaymentEventVersion(version);
     boolean wasPending = order.getOrderStatus() == OrderStatus.PENDING;
-    if (isLateCompletedPayment(order, status)) {
-      log.warn(
-          "Ignored late successful payment for cancelled order {}; manual refund may be required.",
-          orderId);
-      return;
+    if (Boolean.TRUE.equals(reviewRequired) || isLateCompletedPayment(order, status)) {
+      order.setPaymentReviewRequired(true);
     }
     if (order.getPaymentStatus() == PaymentStatus.COMPLETED && status != PaymentStatus.COMPLETED) {
       log.info("Ignored payment status regression {} for completed order {}", status, orderId);
@@ -699,9 +773,6 @@ public class OrderService {
     if (!isExpiredVnpayOrder(order, cutoff)) {
       return false;
     }
-    if (order.isStockReserved()) {
-      restoreStock(order);
-    }
     order.setOrderStatus(OrderStatus.CANCELLED);
     order.setPaymentStatus(PaymentStatus.CANCELLED);
     orderRepository.save(order);
@@ -726,7 +797,7 @@ public class OrderService {
   }
 
   @Transactional
-  public void handleStockResult(com.kyro.order.event.StockResultEvent event) {
+  public void handleStockResult(StockResultEvent event) {
     Order order = findOrderByIdForUpdate(event.orderId());
     boolean wasPending = order.getOrderStatus() == OrderStatus.PENDING;
     applyStockResult(order, event.success());
@@ -773,24 +844,31 @@ public class OrderService {
   }
 
   /** Builds the PII-free cancellation event: product quantities summed across variants. */
-  static com.kyro.order.event.OrderCancelledEvent orderCancelledEvent(Order order) {
+  static OrderCancelledEvent orderCancelledEvent(Order order) {
     Map<Long, Integer> quantities = new LinkedHashMap<>();
     order
         .getOrderItems()
         .forEach(item -> quantities.merge(item.getProductId(), item.getQuantity(), Integer::sum));
-    return new com.kyro.order.event.OrderCancelledEvent(
+    return new OrderCancelledEvent(
         order.getId(),
         order.getUserId(),
         quantities.entrySet().stream()
-            .map(
-                entry ->
-                    new com.kyro.order.event.OrderCancelledEvent.Item(
-                        entry.getKey(), entry.getValue()))
+            .map(entry -> new OrderCancelledEvent.Item(entry.getKey(), entry.getValue()))
             .toList());
   }
 
   private void publishOrderCancelled(Order order) {
     eventPublisher.publishEvent(orderCancelledEvent(order));
+    eventPublisher.publishEvent(
+        new StockReleaseEvent(
+            order.getId(),
+            order.getOrderItems().stream()
+                .map(
+                    i ->
+                        Map.<String, Object>of(
+                            "variantId", i.getVariantId(), "quantity", i.getQuantity()))
+                .toList()));
+    order.setStockReserved(false);
   }
 
   static boolean isNewlyConfirmed(boolean wasPending, Order order) {
@@ -798,6 +876,17 @@ public class OrderService {
   }
 
   private void publishOrderConfirmation(Order order) {
+    eventPublisher.publishEvent(
+        new CartConfirmedEvent(
+            order.getId(),
+            order.getUserId(),
+            order.getOrderItems().stream()
+                .filter(i -> i.getCartItemId() != null)
+                .map(
+                    i ->
+                        Map.<String, Object>of(
+                            "cartItemId", i.getCartItemId(), "quantity", i.getQuantity()))
+                .toList()));
     OrderAddress address = order.getShippingAddress();
     Map<String, Object> addressMap = new HashMap<>();
     addressMap.put("fullName", address.getFullName());
@@ -838,7 +927,7 @@ public class OrderService {
     Map<String, Object> payload = new HashMap<>();
     payload.put("email", order.getUserEmail());
     payload.put("order", orderMap);
-    eventPublisher.publishEvent(new com.kyro.order.event.OrderConfirmedEvent(payload));
+    eventPublisher.publishEvent(new OrderConfirmedEvent(payload));
   }
 
   private Order findOrderByIdForUpdate(Long orderId) {
@@ -847,22 +936,12 @@ public class OrderService {
         .orElseThrow(
             () ->
                 new DomainException(
-                    org.springframework.http.HttpStatus.NOT_FOUND,
+                    HttpStatus.NOT_FOUND,
                     "ORDER_NOT_FOUND",
                     "Không tìm thấy đơn hàng với ID: " + orderId));
   }
 
   private static DomainException invalidOrderState(String message) {
-    return new DomainException(
-        org.springframework.http.HttpStatus.CONFLICT, "INVALID_ORDER_STATE", message);
-  }
-
-  private void restoreStock(Order order) {
-    for (OrderItem item : order.getOrderItems()) {
-      catalogClient.adjustStock(
-          item.getVariantId(),
-          new CatalogClient.StockAdjustmentRequest(item.getVariantId(), item.getQuantity()));
-    }
-    order.setStockReserved(false);
+    return new DomainException(HttpStatus.CONFLICT, "INVALID_ORDER_STATE", message);
   }
 }

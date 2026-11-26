@@ -37,6 +37,14 @@ public class ProductVariant {
   @Column(nullable = false)
   private int stock;
 
+  @Version
+  @Column(name = "stock_version", nullable = false)
+  private long stockVersion;
+
+  public long getStockVersion() {
+    return stockVersion;
+  }
+
   @Column(nullable = false)
   private boolean active = true;
 

@@ -84,6 +84,21 @@ public class RabbitMQConfig {
   }
 
   @Bean
+  public Declarables releaseTopology() {
+    Queue queue =
+        QueueBuilder.durable("catalog-stock-release-queue")
+            .deadLetterExchange(DLX_EXCHANGE)
+            .deadLetterRoutingKey("catalog-stock-release-queue.dlq")
+            .build();
+    Queue dlq = new Queue("catalog-stock-release-queue.dlq");
+    return new Declarables(
+        queue,
+        dlq,
+        BindingBuilder.bind(queue).to(orderExchange()).with("stock.release"),
+        BindingBuilder.bind(dlq).to(deadLetterExchange()).with(dlq.getName()));
+  }
+
+  @Bean
   public MessageConverter jsonMessageConverter() {
     return new Jackson2JsonMessageConverter();
   }

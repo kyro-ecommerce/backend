@@ -9,6 +9,17 @@ import java.time.LocalDateTime;
 @Table(name = "order_item")
 public class OrderItem {
 
+  @Column(name = "cart_item_id")
+  private Long cartItemId;
+
+  public Long getCartItemId() {
+    return cartItemId;
+  }
+
+  public void setCartItemId(Long value) {
+    cartItemId = value;
+  }
+
   public OrderItem() {}
 
   @Id

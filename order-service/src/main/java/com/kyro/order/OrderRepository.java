@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
@@ -20,6 +21,7 @@ public interface OrderRepository
 
   List<Order> findByUserId(Long userId);
 
+  @EntityGraph(attributePaths = {"orderItems", "shippingAddress"})
   Optional<Order> findByUserIdAndIdempotencyKey(Long userId, String idempotencyKey);
 
   @Lock(LockModeType.PESSIMISTIC_WRITE)

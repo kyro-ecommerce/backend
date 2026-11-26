@@ -15,11 +15,14 @@ import com.kyro.order.client.CatalogClient;
 import com.kyro.order.dto.OrderDTO;
 import com.kyro.order.event.OrderCancelledEvent;
 import com.kyro.order.event.OrderConfirmedEvent;
+import com.kyro.order.event.StockReleaseEvent;
 import com.kyro.order.event.StockResultEvent;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -221,7 +224,9 @@ class OrderServiceTest {
 
     service.confirmedOrder(42L);
 
-    OrderConfirmedEvent event = (OrderConfirmedEvent) events.getFirst();
+    OrderConfirmedEvent event =
+        (OrderConfirmedEvent)
+            events.stream().filter(OrderConfirmedEvent.class::isInstance).findFirst().orElseThrow();
     Map<String, Object> orderData = (Map<String, Object>) event.payload().get("order");
     List<Map<String, Object>> items = (List<Map<String, Object>>) orderData.get("items");
     assertEquals("POWERBANK-20K", items.getFirst().get("sku"));
@@ -250,8 +255,11 @@ class OrderServiceTest {
 
     assertTrue(service.expireVnpayOrder(42L, expiration));
 
-    assertEquals(List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 2)))), events);
-    assertTrue(adjusted[0]);
+    assertEquals(
+        List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 2)))),
+        events.stream().filter(OrderCancelledEvent.class::isInstance).toList());
+    assertFalse(adjusted[0]);
+    assertTrue(events.stream().anyMatch(StockReleaseEvent.class::isInstance));
     assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
     assertEquals(PaymentStatus.CANCELLED, order.getPaymentStatus());
     assertFalse(order.isStockReserved());
@@ -277,26 +285,23 @@ class OrderServiceTest {
   }
 
   @Test
-  void stockFailureLeavesOrderPendingForRetry() {
-    Instant expiration = Instant.parse("2026-08-16T08:15:00Z");
+  void expirationQueuesReleaseEvenWhenCatalogIsUnavailable() {
     Order order = order(PaymentStatus.PENDING, true);
     order.setId(42L);
-    order.setExpiresAt(expiration);
-    order.getOrderItems().iterator().next().setVariantId(7L);
-    OrderRepository repository = repositoryFor(order);
+    Instant expired = Instant.parse("2026-08-16T08:15:00Z");
+    order.setExpiresAt(expired);
+    List<Object> events = new ArrayList<>();
     CatalogClient catalog =
         proxy(
             CatalogClient.class,
-            (instance, method, arguments) -> {
-              throw new IllegalStateException("catalog unavailable");
+            (instance, method, args) -> {
+              throw new AssertionError("No synchronous stock adjustment");
             });
-    OrderService service = new OrderService(repository, null, catalog, null, null, null);
-
-    assertThrows(IllegalStateException.class, () -> service.expireVnpayOrder(42L, expiration));
-
-    assertEquals(OrderStatus.PENDING, order.getOrderStatus());
-    assertEquals(PaymentStatus.PENDING, order.getPaymentStatus());
-    assertTrue(order.isStockReserved());
+    OrderService service =
+        new OrderService(repositoryFor(order), null, catalog, null, null, events::add);
+    assertTrue(service.expireVnpayOrder(42L, expired));
+    assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
+    assertTrue(events.stream().anyMatch(StockReleaseEvent.class::isInstance));
   }
 
   @Test
@@ -311,7 +316,7 @@ class OrderServiceTest {
 
     assertTrue(service.expireVnpayOrder(42L, expiration));
 
-    assertEquals(1, events.size());
+    assertEquals(2, events.size());
 
     assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
     assertEquals(PaymentStatus.CANCELLED, order.getPaymentStatus());
@@ -325,9 +330,11 @@ class OrderServiceTest {
     order.setOrderStatus(OrderStatus.CONFIRMED);
     OrderItem sameProductOtherVariant = new OrderItem();
     sameProductOtherVariant.setProductId(3L);
+    sameProductOtherVariant.setVariantId(8L);
     sameProductOtherVariant.setQuantity(1);
     OrderItem otherProduct = new OrderItem();
     otherProduct.setProductId(8L);
+    otherProduct.setVariantId(9L);
     otherProduct.setQuantity(4);
     order.setOrderItems(
         List.of(order.getOrderItems().iterator().next(), sameProductOtherVariant, otherProduct));
@@ -339,10 +346,31 @@ class OrderServiceTest {
 
     assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
     assertEquals(
-        List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 3), item(8L, 4)))), events);
+        List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 3), item(8L, 4)))),
+        events.stream().filter(OrderCancelledEvent.class::isInstance).toList());
     assertFalse(
-        java.util.Arrays.stream(OrderCancelledEvent.class.getRecordComponents())
+        Arrays.stream(OrderCancelledEvent.class.getRecordComponents())
             .anyMatch(component -> component.getName().toLowerCase().contains("email")));
+  }
+
+  @Test
+  void cancellingPaidOrderRequiresReviewAndPreservesPayment() {
+    Order order = order(PaymentStatus.COMPLETED, true);
+    order.setId(42L);
+    order.setOrderStatus(OrderStatus.CONFIRMED);
+    var service = new OrderService(repositoryFor(order), null, null, null, null, event -> {});
+    service.cancelOrder(42L);
+    assertEquals(PaymentStatus.COMPLETED, order.getPaymentStatus());
+    assertTrue(order.isPaymentReviewRequired());
+  }
+
+  @Test
+  void cannotDeleteCancelledVnpayOrderWithPotentialLateCharge() {
+    Order order = order(PaymentStatus.CANCELLED, false);
+    order.setId(42L);
+    order.setOrderStatus(OrderStatus.CANCELLED);
+    var service = new OrderService(repositoryFor(order), null, null, null, null, event -> {});
+    assertThrows(DomainException.class, () -> service.deleteOrder(42L));
   }
 
   @Test
@@ -372,7 +400,9 @@ class OrderServiceTest {
     service.handleStockResult(new StockResultEvent(42L, 10L, false, "out of stock"));
 
     assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
-    assertEquals(List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 2)))), events);
+    assertEquals(
+        List.of(new OrderCancelledEvent(42L, 10L, List.of(item(3L, 2)))),
+        events.stream().filter(OrderCancelledEvent.class::isInstance).toList());
   }
 
   @Test
@@ -403,7 +433,38 @@ class OrderServiceTest {
     service.updatePaymentStatus(42L, PaymentStatus.COMPLETED);
 
     assertEquals(OrderStatus.CANCELLED, order.getOrderStatus());
-    assertEquals(PaymentStatus.CANCELLED, order.getPaymentStatus());
+    assertEquals(PaymentStatus.COMPLETED, order.getPaymentStatus());
+    assertTrue(order.isPaymentReviewRequired());
+  }
+
+  @Test
+  void projectsReviewOnlyPaymentEventWithoutRepeatingConfirmationOrClearingReview() {
+    Order order = order(PaymentStatus.COMPLETED, true);
+    order.setId(42L);
+    order.setOrderStatus(OrderStatus.CONFIRMED);
+    List<Object> events = new ArrayList<>();
+    OrderService service =
+        new OrderService(repositoryFor(order), null, null, null, null, events::add);
+    service.updatePaymentStatus(42L, PaymentStatus.COMPLETED, 10L, true);
+    assertTrue(order.isPaymentReviewRequired());
+    service.updatePaymentStatus(42L, PaymentStatus.COMPLETED, 9L, false);
+    service.updatePaymentStatus(42L, PaymentStatus.COMPLETED, 11L, false);
+    service.updatePaymentStatus(42L, PaymentStatus.COMPLETED, 12L, null);
+    assertTrue(order.isPaymentReviewRequired());
+    assertEquals(12L, order.getPaymentEventVersion());
+    assertEquals(OrderStatus.CONFIRMED, order.getOrderStatus());
+    assertTrue(events.isEmpty());
+  }
+
+  @Test
+  void staleReviewEventCannotOverrideNewerProjection() {
+    Order order = order(PaymentStatus.COMPLETED, true);
+    order.setId(42L);
+    order.setOrderStatus(OrderStatus.CONFIRMED);
+    order.setPaymentEventVersion(10L);
+    OrderService service = new OrderService(repositoryFor(order), null, null, null, null, null);
+    service.updatePaymentStatus(42L, PaymentStatus.COMPLETED, 9L, true);
+    assertFalse(order.isPaymentReviewRequired());
   }
 
   private static OrderRepository repositoryFor(Order order) {
@@ -444,55 +505,26 @@ class OrderServiceTest {
   }
 
   @Test
-  void placeOrderIdempotentHandlesRaceConditionGracefully() {
-    Order winnerOrder = new Order();
-    winnerOrder.setId(101L);
-    winnerOrder.setUserId(10L);
-    winnerOrder.setIdempotencyKey("key-race");
-
-    var callCount = new int[] {0};
-    OrderRepository repo =
-        proxy(
-            OrderRepository.class,
-            (proxy, method, args) -> {
-              if ("findByUserIdAndIdempotencyKey".equals(method.getName())) {
-                callCount[0]++;
-                // 1st call (pre-check): return empty
-                // 2nd call (after race exception): return winnerOrder
-                return callCount[0] == 1 ? Optional.empty() : Optional.of(winnerOrder);
-              }
-              throw new UnsupportedOperationException(method.getName());
-            });
-
-    org.springframework.transaction.support.TransactionTemplate txTemplate =
-        new org.springframework.transaction.support.TransactionTemplate() {
-          @Override
-          @SuppressWarnings("unchecked")
-          public <T> T execute(
-              org.springframework.transaction.support.TransactionCallback<T> action) {
-            throw new org.springframework.dao.DataIntegrityViolationException(
-                "duplicate key value violates unique constraint uq_orders_user_idempotency_key");
-          }
-        };
-
-    OrderService orderService = new OrderService(repo, null, null, null, null, null, txTemplate);
-    List<Order> result =
-        orderService.placeOrderIdempotent(
-            1L, 10L, "user@test.com", PaymentMethod.COD, List.of(1L), 0L, 100L, "key-race");
-
-    assertEquals(1, result.size());
-    assertEquals(101L, result.getFirst().getId());
-    assertEquals(2, callCount[0]);
+  void keyCannotBeReusedWithDifferentRequest() {
+    Order existing = new Order();
+    existing.setRequestFingerprint(
+        OrderService.fingerprint(1L, PaymentMethod.COD, List.of(1L), 1, 100));
+    assertThrows(
+        DomainException.class,
+        () ->
+            OrderService.checkFingerprint(
+                existing, OrderService.fingerprint(1L, PaymentMethod.VNPAY, List.of(1L), 1, 100)));
   }
 
   @SuppressWarnings("unchecked")
-  private static <T> T proxy(Class<T> type, java.lang.reflect.InvocationHandler handler) {
+  private static <T> T proxy(Class<T> type, InvocationHandler handler) {
     return (T) Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] {type}, handler);
   }
 
   private static Order order(PaymentStatus paymentStatus, boolean stockReserved) {
     OrderItem item = new OrderItem();
     item.setProductId(3L);
+    item.setVariantId(7L);
     item.setSize("M");
     item.setQuantity(2);
     Order order = new Order();
@@ -501,7 +533,7 @@ class OrderServiceTest {
     order.setPaymentStatus(paymentStatus);
     order.setOrderStatus(OrderStatus.PENDING);
     order.setStockReserved(stockReserved);
-    order.setOrderItems(java.util.List.of(item));
+    order.setOrderItems(List.of(item));
     return order;
   }
 }

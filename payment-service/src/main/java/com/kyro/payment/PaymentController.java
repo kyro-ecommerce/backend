@@ -2,6 +2,7 @@ package com.kyro.payment;
 
 import com.kyro.exceptions.DomainException;
 import com.kyro.payment.client.OrderClient;
+import com.kyro.payment.dto.PaymentDTO;
 import feign.FeignException;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -38,7 +39,8 @@ public class PaymentController {
   public ResponseEntity<Map<String, Object>> createPayment(
       @RequestHeader("X-User-Id") Long userId,
       @RequestHeader(value = "X-User-Roles", required = false) String roles,
-      @PathVariable Long orderId) {
+      @PathVariable Long orderId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String key) {
 
     OrderClient.OrderResponse order;
     try {
@@ -60,7 +62,7 @@ public class PaymentController {
     verifyOwnership(userId, roles, order);
 
     // Create payment URL
-    String paymentUrl = paymentService.createPayment(orderId);
+    String paymentUrl = paymentService.createPayment(orderId, key);
 
     return ResponseEntity.ok(
         Map.of(
@@ -75,34 +77,22 @@ public class PaymentController {
       throw new IllegalArgumentException("Thiếu mã giao dịch vnp_TxnRef");
     }
 
-    PaymentDetail payment = paymentService.processPaymentCallback(params);
-
-    String vnp_ResponseCode = params.get("vnp_ResponseCode");
-    if (vnp_ResponseCode == null) {
-      vnp_ResponseCode = params.get("vnp_TransactionStatus");
-    }
-
+    var result = paymentService.processPaymentCallback(params);
+    Payment payment = result.payment();
     Map<String, Object> response = new HashMap<>();
-
-    if ("00".equals(vnp_ResponseCode)) {
-      response.put("success", true);
-      response.put("message", "Thanh toán thành công");
-      response.put("orderId", payment.getOrderId());
-      response.put("paymentId", payment.getId());
-      response.put("transactionId", payment.getTransactionId());
-    } else {
-      response.put("success", false);
-      response.put("message", "Payment failed");
-      response.put("responseCode", vnp_ResponseCode);
-      response.put("orderId", payment.getOrderId());
-    }
+    response.put("success", result.success());
+    response.put("message", result.success() ? "Thanh toán thành công" : "Payment failed");
+    response.put("orderId", payment.getOrderId());
+    response.put("paymentId", payment.getId());
+    response.put("transactionId", result.transactionId());
+    response.put("responseCode", params.get("vnp_ResponseCode"));
 
     return ResponseEntity.ok(response);
   }
 
   /** Gets payment details by order ID. */
   @GetMapping("/orders/{orderId}/payment")
-  public ResponseEntity<PaymentDetail> getPaymentByOrderId(
+  public ResponseEntity<PaymentDTO> getPaymentByOrderId(
       @RequestHeader("X-User-Id") Long userId,
       @RequestHeader(value = "X-User-Roles", required = false) String roles,
       @PathVariable Long orderId) {
@@ -114,7 +104,7 @@ public class PaymentController {
     }
     verifyOwnership(userId, roles, order);
 
-    PaymentDetail payment =
+    Payment payment =
         paymentRepository
             .findByOrderId(orderId)
             .orElseThrow(
@@ -122,15 +112,70 @@ public class PaymentController {
                     new DomainException(
                         HttpStatus.NOT_FOUND, "Không tìm thấy thông tin thanh toán"));
 
-    return ResponseEntity.ok(payment);
+    return ResponseEntity.ok(paymentService.toDto(payment));
+  }
+
+  @GetMapping("/payment-providers/vnpay/ipn")
+  public Map<String, String> ipn(@RequestParam Map<String, String> params) {
+    try {
+      var result = paymentService.processPaymentCallback(params);
+      return Map.of(
+          "RspCode",
+          result.duplicate() ? "02" : "00",
+          "Message",
+          result.duplicate() ? "Order already confirmed" : "Confirm Success");
+    } catch (DomainException error) {
+      return Map.of("RspCode", "01", "Message", "Order not found");
+    } catch (IllegalArgumentException error) {
+      String code =
+          error.getMessage() != null && error.getMessage().contains("Số tiền") ? "04" : "97";
+      return Map.of("RspCode", code, "Message", "Invalid callback");
+    } catch (RuntimeException error) {
+      log.error("IPN processing failed; provider should retry", error);
+      return Map.of("RspCode", "99", "Message", "Unknown error");
+    }
+  }
+
+  @GetMapping("/orders/{orderId}/payment/transactions")
+  public Object transactions(
+      @RequestHeader("X-User-Id") Long userId,
+      @RequestHeader(value = "X-User-Roles", required = false) String roles,
+      @PathVariable Long orderId) {
+    verifyOwnership(userId, roles, orderClient.getOrderById(orderId));
+    return paymentService.transactions(orderId);
+  }
+
+  @GetMapping("/admin/payments/reviews")
+  public Object reviews(@RequestHeader("X-User-Roles") String roles) {
+    if (!isAdmin(roles)) throw new DomainException(HttpStatus.FORBIDDEN, "Admin required");
+    return paymentRepository.findByReviewRequiredTrue().stream()
+        .map(paymentService::toDto)
+        .toList();
+  }
+
+  @GetMapping("/admin/payments/reviews/{id}")
+  public Object review(@RequestHeader("X-User-Roles") String roles, @PathVariable Long id) {
+    if (!isAdmin(roles)) throw new DomainException(HttpStatus.FORBIDDEN, "Admin required");
+    Payment payment =
+        paymentRepository
+            .findById(id)
+            .orElseThrow(() -> new DomainException(HttpStatus.NOT_FOUND, "Payment not found"));
+    return Map.of(
+        "payment",
+        paymentService.toDto(payment),
+        "transactions",
+        paymentService.transactions(payment.getOrderId()));
+  }
+
+  private static boolean isAdmin(String roles) {
+    return roles != null
+        && Arrays.stream(roles.split(","))
+            .map(String::trim)
+            .anyMatch(role -> "ADMIN".equals(role) || "ROLE_ADMIN".equals(role));
   }
 
   private static void verifyOwnership(Long userId, String roles, OrderClient.OrderResponse order) {
-    boolean admin =
-        roles != null
-            && Arrays.stream(roles.split(","))
-                .anyMatch(role -> "ADMIN".equals(role) || "ROLE_ADMIN".equals(role));
-    if (!admin && !userId.equals(order.userId())) {
+    if (!isAdmin(roles) && !userId.equals(order.userId())) {
       throw new DomainException(HttpStatus.FORBIDDEN, "Bạn không có quyền truy cập đơn hàng này");
     }
   }

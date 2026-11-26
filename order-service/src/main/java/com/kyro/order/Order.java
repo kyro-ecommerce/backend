@@ -17,6 +17,39 @@ import org.hibernate.annotations.DynamicInsert;
 @Table(name = "orders")
 public class Order {
 
+  @Column(name = "payment_event_version", nullable = false)
+  private long paymentEventVersion;
+
+  @Column(name = "payment_review_required", nullable = false)
+  private boolean paymentReviewRequired;
+
+  @Column(name = "request_fingerprint", length = 64)
+  private String requestFingerprint;
+
+  public long getPaymentEventVersion() {
+    return paymentEventVersion;
+  }
+
+  public void setPaymentEventVersion(long value) {
+    paymentEventVersion = value;
+  }
+
+  public boolean isPaymentReviewRequired() {
+    return paymentReviewRequired;
+  }
+
+  public void setPaymentReviewRequired(boolean value) {
+    paymentReviewRequired = value;
+  }
+
+  public String getRequestFingerprint() {
+    return requestFingerprint;
+  }
+
+  public void setRequestFingerprint(String value) {
+    requestFingerprint = value;
+  }
+
   public Order() {}
 
   @Id
