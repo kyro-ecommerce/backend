@@ -32,6 +32,9 @@ public class EmailService {
   @Value("${contact.info.email:contact@kyro.com}")
   private String contactEmail;
 
+  @Value("${app.mail.enabled:true}")
+  private boolean mailEnabled;
+
   /**
    * Sends verification OTP code email.
    *
@@ -40,6 +43,10 @@ public class EmailService {
    * @param otpExpirationMinutes expiration limit in minutes
    */
   public void sendOtpEmail(String email, String otp, int otpExpirationMinutes) {
+    if (!mailEnabled) {
+      log.debug("Mail delivery disabled; skipped OTP email to {}", email);
+      return;
+    }
     MimeMessage mimeMessage = mailSender.createMimeMessage();
     try {
       MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, true, "UTF-8");
@@ -71,6 +78,10 @@ public class EmailService {
    * @param orderData order details representation
    */
   public void sendOrderMail(String email, Map<String, Object> orderData) {
+    if (!mailEnabled) {
+      log.debug("Mail delivery disabled; skipped order email to {}", email);
+      return;
+    }
     MimeMessage mimeMessage = mailSender.createMimeMessage();
     try {
       MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, true, "UTF-8");

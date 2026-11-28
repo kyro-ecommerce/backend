@@ -122,19 +122,34 @@ tasks:
       - "{{.MVNW_CMD}} test"
 
   perf:feign:
-    desc: "Đo luồng Feign đồng bộ khi tạo order"
+    desc: "Đo luồng Feign đồng bộ khi tạo order (Warm-up + 3x Steady-State)"
     cmds:
       - ./k6/performance/run.sh feign
 
+  perf:feign:ramp:
+    desc: "Stress ramp luồng Feign để tìm Knee & Breaking Point"
+    cmds:
+      - ./k6/performance/run.sh feign-ramp
+
   perf:rabbitmq:
-    desc: "Đo luồng RabbitMQ từ Payment sang Order"
+    desc: "Đo luồng RabbitMQ từ Payment sang Order (Warm-up + 3x Steady-State)"
     cmds:
       - ./k6/performance/run.sh rabbitmq
+
+  perf:rabbitmq:ramp:
+    desc: "Stress ramp luồng RabbitMQ để tìm Breaking Point"
+    cmds:
+      - ./k6/performance/run.sh rabbitmq-ramp
 
   perf:payment-failure:
     desc: "Mô phỏng VNPay từ chối thanh toán và kiểm tra đồng bộ RabbitMQ"
     cmds:
       - ./k6/performance/run.sh payment-failure
+
+  perf:e2e-saga:
+    desc: "Đo luồng E2E Saga COD (Idempotency-Key + stock.reserved + order.confirmed + Cart cleanup)"
+    cmds:
+      - ./k6/performance/run.sh e2e-saga
 
   perf:reset:
     desc: "Xóa fixture performance và phục hồi stock seed"

@@ -12,6 +12,8 @@ import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -24,10 +26,20 @@ public class OutboxPublisher {
   private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);
   private final JdbcTemplate jdbc;
   private final RabbitTemplate rabbit;
+  private final int batchSize;
   private final AtomicBoolean running = new AtomicBoolean();
 
   public OutboxPublisher(JdbcTemplate jdbc, ConnectionFactory connectionFactory) {
+    this(jdbc, connectionFactory, 25);
+  }
+
+  @Autowired
+  public OutboxPublisher(
+      JdbcTemplate jdbc,
+      ConnectionFactory connectionFactory,
+      @Value("${outbox.batch-size:25}") int batchSize) {
     this.jdbc = jdbc;
+    this.batchSize = Math.max(1, batchSize);
     if (connectionFactory instanceof CachingConnectionFactory factory) {
       factory.setPublisherConfirmType(CachingConnectionFactory.ConfirmType.CORRELATED);
       factory.setPublisherReturns(true);
@@ -43,7 +55,8 @@ public class OutboxPublisher {
       var rows =
           jdbc.queryForList(
               "select * from outbox_events where status='PENDING' and next_attempt_at <= now()"
-                  + " order by id limit 25");
+                  + " order by id limit ?",
+              batchSize);
       for (var row : rows) {
         long id = ((Number) row.get("id")).longValue();
         try {

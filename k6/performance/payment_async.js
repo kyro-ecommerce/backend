@@ -3,25 +3,16 @@ import http from 'k6/http';
 import exec from 'k6/execution';
 import { check, sleep } from 'k6';
 import {
-  BASE_URL, PAYMENT_ORDER_ID, acceptedRequests, auth, body, observationSuccess, observedUpdates,
-  propagationLatency, required, technicalSuccess, thresholds, userId,
+  BASE_URL, PAYMENT_ORDER_ID, acceptedRequests, auth, body, buildScenario, observationSuccess,
+  observedUpdates, propagationLatency, required, technicalSuccess, thresholds, userId,
 } from './common.js';
 
 export const options = {
-  scenarios: {
-    load: {
-      executor: 'constant-arrival-rate',
-      rate: Number(__ENV.RATE || 10),
-      timeUnit: '1s',
-      duration: __ENV.DURATION || '30s',
-      preAllocatedVUs: Number(__ENV.PRE_VUS || 200),
-      maxVUs: Number(__ENV.MAX_VUS || 1000),
-    },
-  },
+  scenarios: buildScenario(),
   thresholds: {
     ...thresholds(),
     rabbitmq_observation_success_rate: ['rate>=0.99'],
-    rabbitmq_propagation_latency: ['p(95)<=2000'],
+    rabbitmq_propagation_latency: [`p(95)<=${Number(__ENV.RABBIT_P95_MS || 2000)}`],
   },
 };
 
@@ -30,7 +21,7 @@ export default function () {
   const orderId = PAYMENT_ORDER_ID + offset;
   const responseCode = __ENV.RESPONSE_CODE || '00';
   const expectedStatus = __ENV.EXPECTED_PAYMENT_STATUS || (responseCode === '00' ? 'COMPLETED' : 'FAILED');
-  const headers = auth(userId(offset));
+  const headers = auth(userId(offset), offset);
   const params = {
     vnp_Amount: '10000',
     vnp_ResponseCode: responseCode,
@@ -59,7 +50,7 @@ export default function () {
       observationSuccess.add(true);
       return;
     }
-    sleep(0.1);
+    sleep(0.05);
   }
   observationSuccess.add(false);
 }

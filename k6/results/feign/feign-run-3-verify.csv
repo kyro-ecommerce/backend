@@ -1,16 +1,35 @@
 orders_by_status
-generated,PENDING/PENDING/reserved,15001
-payment_fixture,PENDING/PENDING/not_reserved,40000
+generated,PENDING/PENDING/reserved,7200
+payment_fixture,PENDING/PENDING/not_reserved,50000
 payment_events
-payment_fixture,PENDING,40000
+payment_fixture,PENDING,50000
+cart_cleanup
+processed_cart_events,0
+remaining_fixture_cart_items,50000
+outbox_status
+kyro_order,SENT,7217
+kyro_catalog,SENT,14415
+kyro_payment,SENT,12
+dlq_status
+payment-order-cancelled-queue.dlq,0
+notification-order-confirmed-queue.dlq,0
+ai.integration.events.v2.dlq,0
+order-payment-status-queue.dlq,0
+catalog-order-delivered-queue.dlq,0
+catalog-order-created-queue.dlq,0
+cart-stock-reserved-queue.dlq,0
+notification-otp-queue.dlq,0
+order-stock-result-queue.dlq,0
+catalog-stock-release-queue.dlq,0
+cart-order-confirmed-queue.dlq,0
 stock
-1/256GB,98499
-2/256GB,98500
-3/256GB,98500
-4/i5/8GB/512GB SSD/RTX 3050,98500
-5/Ryzen 9/32GB/2TB SSD/RTX 4090,98500
-6/i5/8GB/512GB SSD,98500
-7/i7/16GB/1TB SSD,98500
-8/25600mAh,98500
-9/20000mAh,98500
-10/Một cỡ,98500
+1/256GB,99280
+2/256GB,99280
+3/256GB,99280
+4/i5/8GB/512GB SSD/RTX 3050,99280
+5/Ryzen 9/32GB/2TB SSD/RTX 4090,99280
+6/i5/8GB/512GB SSD,99280
+7/i7/16GB/1TB SSD,99280
+8/25600mAh,99280
+9/20000mAh,99280
+10/Một cỡ,99280

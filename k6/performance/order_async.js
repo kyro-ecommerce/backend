@@ -2,36 +2,32 @@ import http from 'k6/http';
 import exec from 'k6/execution';
 import { check } from 'k6';
 import {
-  BASE_URL, BASE_USER_ID, acceptedRequests, auth, body, syncPathLatency, technicalSuccess, thresholds, userId,
+  BASE_URL, acceptedRequests, auth, body, buildScenario, priceForUser,
+  syncPathLatency, technicalSuccess, thresholds, userId,
 } from './common.js';
 
 export const options = {
-  scenarios: {
-    load: {
-      executor: __ENV.EXECUTOR || 'constant-arrival-rate',
-      rate: Number(__ENV.RATE || 10),
-      timeUnit: '1s',
-      duration: __ENV.DURATION || '30s',
-      preAllocatedVUs: Number(__ENV.PRE_VUS || 200),
-      maxVUs: Number(__ENV.MAX_VUS || 1000),
-    },
-  },
+  scenarios: buildScenario(),
   thresholds: {
     ...thresholds(),
-    synchronous_path_latency: ['p(95)<=2000'],
+    synchronous_path_latency: [`p(95)<=${Number(__ENV.SYNC_P95_MS || 500)}`],
   },
 };
 
 export default function () {
-  const id = userId(exec.scenario.iterationInTest);
-  const headers = auth(id);
+  const iter = exec.scenario.iterationInTest;
+  const id = userId(iter);
+  const headers = auth(id, iter);
+  if (__ENV.USE_IDEMPOTENCY === 'true') {
+    headers['Idempotency-Key'] = `perf-order-${id}`;
+  }
   const started = Date.now();
   const response = http.post(`${BASE_URL}/orders`, JSON.stringify({
     addressId: id,
     paymentMethod: 'VNPAY',
     cartItemIds: [id],
     cartVersion: 0,
-    expectedTotalDiscountedPrice: price(id),
+    expectedTotalDiscountedPrice: priceForUser(id),
   }), { headers, tags: { path: 'order_producer' } });
   syncPathLatency.add(Date.now() - started);
   const orderId = body(response).orders?.[0]?.id;
@@ -39,8 +35,4 @@ export default function () {
   technicalSuccess.add(accepted);
   if (!accepted) return;
   acceptedRequests.add(1);
-}
-
-function price(id) {
-  return [32890600, 20001300, 18051400, 18911400, 60191400, 30020900, 3495080, 1295190, 496290, 7461700][(id - BASE_USER_ID) % 10];
 }

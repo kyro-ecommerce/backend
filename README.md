@@ -232,8 +232,10 @@ task status          # Show container health and status
 task logs:cli        # Follow Docker Compose logs
 task test            # Run the Maven test suite
 task format:check    # Check Java formatting
-task perf:feign      # Measure synchronous checkout dependencies
-task perf:rabbitmq   # Measure payment event propagation
+task perf:feign      # Measure synchronous checkout dependencies (Warm-up + 3x Steady-State)
+task perf:feign:ramp # Stress ramp synchronous checkout to find knee/breaking points
+task perf:rabbitmq   # Measure payment event propagation (Warm-up + 3x Steady-State)
+task perf:e2e-saga   # Measure COD E2E saga (Idempotency-Key + order.confirmed + Cart cleanup)
 task perf:payment-failure # Exercise the failed-payment path
 task stop            # Stop the Compose environment
 ```

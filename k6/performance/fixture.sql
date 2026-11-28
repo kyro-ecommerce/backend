@@ -3,24 +3,24 @@
 
 \connect kyro_auth
 BEGIN;
-DELETE FROM address WHERE user_id BETWEEN 100000 AND 139999;
-DELETE FROM users WHERE id BETWEEN 100000 AND 139999;
+DELETE FROM address WHERE user_id BETWEEN 100000 AND 149999;
+DELETE FROM users WHERE id BETWEEN 100000 AND 149999;
 INSERT INTO users (id, active, is_banned, created_at, email, first_name, last_name, password, phone, role_id)
 SELECT id, true, false, now(), 'perf-' || id || '@kyro.test', 'Perf', id::text,
        '$2a$10$XImHvDQ3vUx2nibLZQaWQOuI9GxOPMhTL1RUio9ppxlVGf6TLkxea', '0900000000', 2
-FROM generate_series(100000, 139999) id;
+FROM generate_series(100000, 149999) id;
 INSERT INTO address (id, district, full_name, note, phone_number, province, street, ward, user_id)
 SELECT id, 'Benchmark District', 'Performance User ' || id, '', '0900000000',
        'Benchmark Province', '1 Load Test Street', 'Benchmark Ward', id
-FROM generate_series(100000, 139999) id;
+FROM generate_series(100000, 149999) id;
 COMMIT;
 
 \connect kyro_cart
 BEGIN;
 DELETE FROM processed_cart_events WHERE order_id >= 999999;
-DELETE FROM carts WHERE user_id BETWEEN 100000 AND 139999;
+DELETE FROM carts WHERE user_id BETWEEN 100000 AND 149999;
 INSERT INTO carts (id, user_id, version, created_at, updated_at)
-SELECT id, id, 0, now(), now() FROM generate_series(100000, 139999) id;
+SELECT id, id, 0, now(), now() FROM generate_series(100000, 149999) id;
 INSERT INTO cart_items
   (id, cart_id, product_id, variant_id, product_name, sku, variant_name, quantity, price, sale_price, discount_percent, created_at, updated_at)
 SELECT id, id,
@@ -34,34 +34,40 @@ SELECT id, id,
        (ARRAY[32890600,20001300,18051400,18911400,60191400,30020900,3495080,1295190,496290,7461700])[1 + ((id - 100000) % 10)],
        (ARRAY[6,13,14,14,14,9,8,19,29,17])[1 + ((id - 100000) % 10)],
        now(), now()
-FROM generate_series(100000, 139999) id;
+FROM generate_series(100000, 149999) id;
 COMMIT;
 
 \connect kyro_order
 BEGIN;
 CREATE TEMP TABLE perf_orders AS
-SELECT id, order_address_id FROM orders WHERE user_id BETWEEN 100000 AND 139999 OR id >= 999999;
+SELECT id, order_address_id FROM orders WHERE user_id BETWEEN 100000 AND 149999 OR id >= 999999;
+DELETE FROM outbox_events
+WHERE aggregate_id ~ '^[0-9]+$'
+  AND (aggregate_id::bigint >= 999999 OR aggregate_id::bigint IN (SELECT id FROM perf_orders));
 DELETE FROM order_item WHERE order_id IN (SELECT id FROM perf_orders);
 DELETE FROM orders WHERE id IN (SELECT id FROM perf_orders);
 DELETE FROM order_address WHERE id IN (SELECT order_address_id FROM perf_orders WHERE order_address_id IS NOT NULL);
 INSERT INTO orders
-  (id, order_code, order_date, order_status, original_price, discount, payment_method, payment_status, total_discounted_price, total_items, user_id, user_email)
-SELECT 9000000 + i, 'PERF' || lpad(i::text, 12, '0'), now(), 'PENDING', 100, 0, 'VNPAY', 'PENDING', 100, 1,
+  (id, order_code, order_date, order_status, original_price, discount, payment_method, payment_status, stock_reserved, payment_event_version, payment_review_required, total_discounted_price, total_items, user_id, user_email)
+SELECT 9000000 + i, 'PERF' || lpad(i::text, 12, '0'), now(), 'PENDING', 100, 0, 'VNPAY', 'PENDING', false, 0, false, 100, 1,
        100000 + i, 'perf-' || (100000 + i) || '@kyro.test'
-FROM generate_series(0, 39999) i;
+FROM generate_series(0, 49999) i;
 SELECT setval(pg_get_serial_sequence('orders', 'id'), 999999, false);
 COMMIT;
 
 \connect kyro_payment
 BEGIN;
-UPDATE payments SET winning_transaction_id=NULL WHERE order_id >= 999999;
+CREATE INDEX IF NOT EXISTS idx_perf_payments_winning_tx ON payments(winning_transaction_id);
+DELETE FROM outbox_events WHERE aggregate_id ~ '^[0-9]+$' AND aggregate_id::bigint >= 999999;
+UPDATE payments SET winning_transaction_id=NULL WHERE order_id >= 999999 AND winning_transaction_id IS NOT NULL;
 DELETE FROM payment_transactions WHERE payment_id IN (SELECT id FROM payments WHERE order_id >= 999999);
 DELETE FROM payment_order_cancellations WHERE order_id >= 999999;
 DELETE FROM payments WHERE order_id >= 999999;
+DROP INDEX IF EXISTS idx_perf_payments_winning_tx;
 INSERT INTO payments
   (id, order_id, payment_method, payment_status, total_amount, created_at, updated_at)
 SELECT 9000000 + i, 9000000 + i, 'VNPAY', 'PENDING', 100, now(), now()
-FROM generate_series(0, 39999) i;
+FROM generate_series(0, 49999) i;
 INSERT INTO payment_transactions(payment_id,transaction_reference,amount,transaction_status)
 SELECT id,'perf-' || order_id,100,'PENDING' FROM payments WHERE id >= 9000000;
 SELECT setval(pg_get_serial_sequence('payments', 'id'), 999999, false);
@@ -69,5 +75,9 @@ COMMIT;
 
 \connect kyro_catalog
 BEGIN;
+DELETE FROM processed_stock_reservation WHERE order_id >= 999999;
+DELETE FROM outbox_events
+WHERE (routing_key IN ('stock.reserved','stock.failed') AND aggregate_id ~ '^[0-9]+$' AND aggregate_id::bigint >= 999999)
+   OR (routing_key = 'stock.changed' AND aggregate_id IN ('1','4','6','8','10','12','14','16','18','20'));
 UPDATE product_variant SET stock = 100000 WHERE id IN (1,4,6,8,10,12,14,16,18,20);
 COMMIT;
