@@ -7,6 +7,34 @@ x-java-healthcheck: &java-healthcheck
   start_interval: 2s
   start_period: 35s
 
+x-jvm-light: &jvm-light
+  JAVA_TOOL_OPTIONS: >-
+    -Xms48m -Xmx128m -XX:+UseSerialGC
+    -XX:MinHeapFreeRatio=20 -XX:MaxHeapFreeRatio=40
+    -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m
+    -Xss256k -Xshare:auto
+
+x-jvm-medium: &jvm-medium
+  JAVA_TOOL_OPTIONS: >-
+    -Xms64m -Xmx192m -XX:+UseSerialGC
+    -XX:MinHeapFreeRatio=20 -XX:MaxHeapFreeRatio=40
+    -XX:MaxMetaspaceSize=160m -XX:ReservedCodeCacheSize=64m
+    -Xss256k -Xshare:auto
+
+x-jvm-heavy: &jvm-heavy
+  JAVA_TOOL_OPTIONS: >-
+    -Xms96m -Xmx256m -XX:+UseSerialGC
+    -XX:MinHeapFreeRatio=20 -XX:MaxHeapFreeRatio=40
+    -XX:MaxMetaspaceSize=176m -XX:ReservedCodeCacheSize=64m
+    -Xss256k -Xshare:auto
+
+x-jvm-gateway: &jvm-gateway
+  JAVA_TOOL_OPTIONS: >-
+    -Xms96m -Xmx256m -XX:MaxDirectMemorySize=128m -XX:+UseSerialGC
+    -XX:MinHeapFreeRatio=20 -XX:MaxHeapFreeRatio=40
+    -XX:MaxMetaspaceSize=160m -XX:ReservedCodeCacheSize=64m
+    -Xss256k -Xshare:auto
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -66,6 +94,7 @@ services:
     ports:
       - "8761:8761"
     environment:
+      <<: *jvm-light
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8761/actuator/health || exit 1"]
@@ -81,6 +110,7 @@ services:
     ports:
       - "8888:8888"
     environment:
+      <<: *jvm-light
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
       MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
@@ -108,12 +138,13 @@ services:
       redis:
         condition: service_healthy
     environment:
+      <<: *jvm-gateway
       SPRING_CLOUD_CONFIG_URI: http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
       REDIS_HOST: redis
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
-      AI_SERVICE_URI: ${AI_SERVICE_URI:-http://host.docker.internal:8000}
+      AI_SERVICE_URI: ${AI_SERVICE_URI:-http://ai-service:8000}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
@@ -138,6 +169,7 @@ services:
     env_file:
       - .env
     environment:
+      <<: *jvm-medium
       SPRING_CLOUD_CONFIG_URI: http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
@@ -173,6 +205,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: *jvm-heavy
       SPRING_CLOUD_CONFIG_URI: http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
@@ -207,6 +240,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: *jvm-medium
       SPRING_CLOUD_CONFIG_URI: http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
@@ -235,6 +269,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: *jvm-light
       SPRING_CLOUD_CONFIG_URI: http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
@@ -266,6 +301,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: *jvm-heavy
       SPRING_CLOUD_CONFIG_URI: http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
@@ -295,6 +331,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      <<: *jvm-medium
       SPRING_CLOUD_CONFIG_URI: http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
@@ -312,14 +349,55 @@ services:
       <<: *java-healthcheck
     restart: always
 
+  ai-service:
+    build:
+      context: ../AI-service
+    container_name: kyro-ai-service
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    env_file:
+      - ../AI-service/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${DATABASE_USERNAME:-postgres}:${DATABASE_PASSWORD:-postgres_password}@kyro-postgres:5432/ai_service
+      RABBITMQ_URL: amqp://guest:guest@kyro-rabbitmq:5672/
+      REDIS_URL: redis://kyro-redis:6379/1
+      CATALOG_SERVICE_URL: http://api-gateway:8080
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}
+      RUN_EVENT_CONSUMER_IN_API: "true"
+      EMBEDDING_WARMUP: ${AI_EMBEDDING_WARMUP:-true}
+      DB_POOL_SIZE: ${AI_DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${AI_DB_MAX_OVERFLOW:-10}
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/ai/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_interval: 3s
+      start_period: 30s
+    restart: always
+
   zipkin:
     image: openzipkin/zipkin:latest
     container_name: kyro-zipkin
     ports:
       - "9411:9411"
+    environment:
+      JAVA_OPTS: "-Xms64m -Xmx128m -XX:+UseSerialGC -XX:MaxMetaspaceSize=96m -XX:ReservedCodeCacheSize=48m -Xss256k"
+      MALLOC_ARENA_MAX: "2"
+      MEM_MAX_SPANS: "50000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:9411/health || exit 1"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
@@ -330,16 +408,20 @@ services:
     container_name: kyro-prometheus
     ports:
       - "9090:9090"
+    environment:
+      GOGC: "50"
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - kyro_prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=3d"
+      - "--storage.tsdb.retention.size=512MB"
       - "--web.enable-lifecycle"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
       start_period: 5s

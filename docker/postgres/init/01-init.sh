@@ -8,6 +8,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE DATABASE kyro_cart;
     CREATE DATABASE kyro_order;
     CREATE DATABASE kyro_payment;
+    CREATE DATABASE ai_service;
 EOSQL
 
 echo "Databases created successfully."
