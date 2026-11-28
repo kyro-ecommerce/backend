@@ -39,6 +39,7 @@ public class OrderController {
   @Transactional(readOnly = true)
   public ResponseEntity<PageResponse<OrderDTO>> getUserOrders(
       @RequestHeader("X-User-Id") Long userId,
+      @RequestParam(required = false) String search,
       @RequestParam(required = false) String status,
       @RequestParam(required = false) String paymentMethod,
       @RequestParam(required = false) String paymentStatus,
@@ -54,7 +55,7 @@ public class OrderController {
     OrderFilter filter =
         OrderFilter.from(
             userId,
-            null,
+            search,
             status,
             paymentMethod,
             paymentStatus,

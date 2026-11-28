@@ -27,9 +27,10 @@ public record OrderFilter(
       LocalDate endDate,
       Integer minTotal,
       Integer maxTotal) {
+    String normalizedSearch = (search != null && !search.trim().isEmpty()) ? search.trim() : null;
     return new OrderFilter(
         userId,
-        search,
+        normalizedSearch,
         parse(OrderStatus.class, status),
         parse(PaymentMethod.class, paymentMethod),
         parse(PaymentStatus.class, paymentStatus),

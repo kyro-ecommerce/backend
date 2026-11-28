@@ -57,7 +57,8 @@ public class AuthenticationFilter
       }
 
       Claims claims = jwtUtils.getClaims(token);
-      if (!(claims.get("roles") instanceof List<?>)
+      if (!"access".equals(claims.get("typ"))
+          || !(claims.get("roles") instanceof List<?>)
           || claims.getId() == null
           || claims.getId().isBlank()
           || claims.getExpiration() == null) {

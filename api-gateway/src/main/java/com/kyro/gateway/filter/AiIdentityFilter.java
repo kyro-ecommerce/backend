@@ -73,8 +73,9 @@ public class AiIdentityFilter extends AbstractGatewayFilterFactory<AiIdentityFil
             return reject(exchange, HttpStatus.UNAUTHORIZED, "Invalid access token");
           }
           Claims claims = jwtUtils.getClaims(token);
-          // Existing access tokens have id/roles/jti/exp; refresh tokens do not.
-          if (!(claims.get("roles") instanceof List<?>)
+          // Access tokens must explicitly declare typ="access" along with id/roles/jti/exp.
+          if (!"access".equals(claims.get("typ"))
+              || !(claims.get("roles") instanceof List<?>)
               || claims.getId() == null
               || claims.getId().isBlank()
               || claims.getExpiration() == null) {

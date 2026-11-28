@@ -31,6 +31,7 @@ class AiIdentityFilterTest {
 
   private String access(long id, boolean expired) {
     return Jwts.builder()
+        .claim("typ", "access")
         .claim("id", id)
         .claim("roles", List.of("USER"))
         .id("fixture-access")
@@ -132,11 +133,36 @@ class AiIdentityFilterTest {
     String refresh =
         Jwts.builder()
             .subject("fixture")
+            .claim("typ", "refresh")
+            .expiration(new Date(System.currentTimeMillis() + 60000))
+            .signWith(KEY)
+            .compact();
+    String missingTyp =
+        Jwts.builder()
+            .claim("id", 42L)
+            .claim("roles", List.of("USER"))
+            .id("fixture-legacy")
+            .expiration(new Date(System.currentTimeMillis() + 60000))
+            .signWith(KEY)
+            .compact();
+    String refreshWithAccessShape =
+        Jwts.builder()
+            .claim("typ", "refresh")
+            .claim("id", 42L)
+            .claim("roles", List.of("USER"))
+            .id("fixture-refresh-shape")
             .expiration(new Date(System.currentTimeMillis() + 60000))
             .signWith(KEY)
             .compact();
     for (String token :
-        List.of("not-a-jwt", access(42, true), refresh, access(0, false), access(-1, false))) {
+        List.of(
+            "not-a-jwt",
+            access(42, true),
+            refresh,
+            missingTyp,
+            refreshWithAccessShape,
+            access(0, false),
+            access(-1, false))) {
       var exchange =
           MockServerWebExchange.from(
               MockServerHttpRequest.get("/api/v1/ai/search?q=laptop")

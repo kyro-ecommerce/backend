@@ -41,7 +41,7 @@ public class AuthTokenFilter extends OncePerRequestFilter {
       throws ServletException, IOException {
     try {
       String jwt = parseJwt(request);
-      if (StringUtils.hasText(jwt) && jwtUtils.validateToken(jwt)) {
+      if (StringUtils.hasText(jwt) && jwtUtils.validateAccessToken(jwt)) {
         String username = jwtUtils.getEmailFromToken(jwt);
         UserDetails userDetails = userDetailsService.loadUserByUsername(username);
         var auth =

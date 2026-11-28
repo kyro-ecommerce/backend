@@ -10,12 +10,14 @@ import com.kyro.auth.dto.UserDTO;
 import com.kyro.auth.security.jwt.JwtUtils;
 import com.kyro.auth.security.otp.OtpService;
 import com.kyro.enums.UserRole;
+import com.kyro.exceptions.DomainException;
 import jakarta.persistence.EntityExistsException;
 import jakarta.persistence.EntityNotFoundException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -210,6 +212,7 @@ public class UserService {
             .findById(addressId)
             .orElseThrow(
                 () -> new EntityNotFoundException("Address not found with ID: " + addressId));
+    verifyAddressOwnership(user, address);
 
     if (request.getFullName() != null && !request.getFullName().trim().isEmpty()) {
       address.setFullName(request.getFullName().trim());
@@ -248,11 +251,21 @@ public class UserService {
             .findById(addressId)
             .orElseThrow(
                 () -> new EntityNotFoundException("Address not found with ID: " + addressId));
+    verifyAddressOwnership(user, address);
 
     if (user.getAddress() != null) {
       user.getAddress().removeIf(a -> a.getId() != null && a.getId().equals(addressId));
     }
     addressRepository.delete(address);
+  }
+
+  private void verifyAddressOwnership(User user, Address address) {
+    if (address.getUser() == null
+        || address.getUser().getId() == null
+        || !address.getUser().getId().equals(user.getId())) {
+      throw new DomainException(
+          HttpStatus.FORBIDDEN, "FORBIDDEN", "Bạn không có quyền thao tác trên địa chỉ này");
+    }
   }
 
   @Transactional

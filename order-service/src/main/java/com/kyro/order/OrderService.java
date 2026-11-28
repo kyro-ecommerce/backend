@@ -132,7 +132,8 @@ public class OrderService {
             predicates.add(cb.equal(root.get("userId"), filter.userId()));
           }
           if (search != null) {
-            String pattern = "%" + search.toLowerCase(Locale.ROOT) + "%";
+            String pattern = "%" + escapeLike(search.toLowerCase(Locale.ROOT)) + "%";
+            String phonePattern = "%" + escapeLike(search) + "%";
             var address = root.join("shippingAddress", JoinType.LEFT);
             var itemSubquery = query.subquery(Integer.class);
             var item = itemSubquery.from(OrderItem.class);
@@ -140,13 +141,13 @@ public class OrderService {
                 .select(cb.literal(1))
                 .where(
                     cb.equal(item.get("order"), root),
-                    cb.like(cb.lower(item.get("productName")), pattern));
+                    cb.like(cb.lower(item.get("productName")), pattern, '\\'));
             predicates.add(
                 cb.or(
-                    cb.like(cb.lower(root.get("orderCode")), pattern),
-                    cb.like(cb.lower(root.get("userEmail")), pattern),
-                    cb.like(cb.lower(address.get("fullName")), pattern),
-                    cb.like(address.get("phoneNumber"), "%" + search + "%"),
+                    cb.like(cb.lower(root.get("orderCode")), pattern, '\\'),
+                    cb.like(cb.lower(root.get("userEmail")), pattern, '\\'),
+                    cb.like(cb.lower(address.get("fullName")), pattern, '\\'),
+                    cb.like(address.get("phoneNumber"), phonePattern, '\\'),
                     cb.exists(itemSubquery)));
           }
           if (filter.status() != null) {
@@ -236,6 +237,10 @@ public class OrderService {
 
   private static String clean(String value) {
     return value == null || value.isBlank() ? null : value.trim();
+  }
+
+  static String escapeLike(String value) {
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
   }
 
   public boolean hasPurchasedAndDelivered(Long userId, Long productId) {

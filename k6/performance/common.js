@@ -22,6 +22,7 @@ export function auth(userId, iteration = 0) {
   const header = b64({ alg: 'HS256', typ: 'JWT' });
   const payload = b64({
     sub: `perf-${userId}@kyro.test`,
+    typ: 'access',
     id: userId,
     roles: ['CUSTOMER'],
     jti: `perf-${userId}-${now}-${iteration}`,

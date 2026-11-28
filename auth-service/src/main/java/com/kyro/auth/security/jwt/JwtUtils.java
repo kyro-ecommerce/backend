@@ -39,6 +39,7 @@ public class JwtUtils {
 
     return Jwts.builder()
         .subject(userPrincipal.getEmail())
+        .claim("typ", "access")
         .claim("id", userPrincipal.getId())
         .claim("roles", roles)
         .issuedAt(new Date())
@@ -52,8 +53,10 @@ public class JwtUtils {
 
     return Jwts.builder()
         .subject(email)
+        .claim("typ", "refresh")
         .issuedAt(new Date())
         .expiration(new Date(System.currentTimeMillis() + refreshExpireTime))
+        .id(UUID.randomUUID().toString())
         .signWith(getSigningKey())
         .compact();
   }
@@ -68,11 +71,36 @@ public class JwtUtils {
     }
   }
 
-  public boolean validateToken(String token) {
+  public boolean validateAccessToken(String token) {
     try {
-      Jwts.parser().verifyWith(getSigningKey()).build().parseSignedClaims(token);
-      return true;
-    } catch (JwtException e) {
+      Claims claims =
+          Jwts.parser().verifyWith(getSigningKey()).build().parseSignedClaims(token).getPayload();
+      if (!"access".equals(claims.get("typ"))) {
+        return false;
+      }
+      if (!(claims.get("roles") instanceof List<?>)) {
+        return false;
+      }
+      if (claims.getId() == null || claims.getId().isBlank() || claims.getExpiration() == null) {
+        return false;
+      }
+      Object idObj = claims.get("id");
+      if (idObj == null) {
+        return false;
+      }
+      long userId = Long.parseLong(String.valueOf(idObj));
+      return userId > 0;
+    } catch (JwtException | IllegalArgumentException e) {
+      return false;
+    }
+  }
+
+  public boolean validateRefreshToken(String token) {
+    try {
+      Claims claims =
+          Jwts.parser().verifyWith(getSigningKey()).build().parseSignedClaims(token).getPayload();
+      return "refresh".equals(claims.get("typ")) && claims.getExpiration() != null;
+    } catch (JwtException | IllegalArgumentException e) {
       return false;
     }
   }

@@ -11,6 +11,7 @@ import com.kyro.exceptions.DomainException;
 import com.kyro.utils.CookieUtils;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import java.util.HashMap;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -60,7 +61,7 @@ public class AuthController {
 
   @PostMapping("/login")
   public ResponseEntity<Map<String, Object>> authenticateUser(
-      @RequestBody LoginRequest request, HttpServletResponse response) {
+      @Valid @RequestBody LoginRequest request, HttpServletResponse response) {
     Authentication authentication =
         authenticationManager.authenticate(
             new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword()));
@@ -87,7 +88,8 @@ public class AuthController {
   }
 
   @PostMapping("/register")
-  public ResponseEntity<Map<String, String>> registerUser(@RequestBody RegisterRequest request) {
+  public ResponseEntity<Map<String, String>> registerUser(
+      @Valid @RequestBody RegisterRequest request) {
     userService.registerUser(request);
     return ResponseEntity.ok(
         Map.of("message", "Mã xác thực đã được gửi tới email. Vui lòng kiểm tra và xác thực."));
@@ -107,7 +109,7 @@ public class AuthController {
   @PostMapping("/refresh")
   public ResponseEntity<Map<String, String>> refreshAccessToken(HttpServletRequest request) {
     String refreshToken = cookieUtils.getRefreshTokenFromCookies(request);
-    if (refreshToken != null && jwtUtils.validateToken(refreshToken)) {
+    if (refreshToken != null && jwtUtils.validateRefreshToken(refreshToken)) {
       String usernameFromToken = jwtUtils.getEmailFromToken(refreshToken);
       UserDetails userDetails = userDetailsService.loadUserByUsername(usernameFromToken);
       String newAccessToken =
@@ -155,7 +157,7 @@ public class AuthController {
 
   @PostMapping("/password-reset")
   public ResponseEntity<Map<String, String>> forgotPass(
-      @RequestBody ForgotPasswordRequest forgotPasswordRequest) {
+      @Valid @RequestBody ForgotPasswordRequest forgotPasswordRequest) {
     OtpVerificationRequest tmp = new OtpVerificationRequest();
     tmp.setEmail(forgotPasswordRequest.getEmail());
     tmp.setOtp(forgotPasswordRequest.getOtp());
